@@ -1,0 +1,31 @@
+{
+  "lastUpdate": "2024-06-24T15:30:00.000Z",
+  "data": {
+    "ticker": "005930",
+    "date": "2024-06-24",
+    "institution": {
+      "buy": 1850000,
+      "sell": 1420000,
+      "net": 430000,
+      "buyRate": 0.566,
+      "sellRate": 0.434
+    },
+    "foreign": {
+      "buy": 950000,
+      "sell": 780000,
+      "net": 170000,
+      "buyRate": 0.549,
+      "sellRate": 0.451
+    },
+    "shortSell": {
+      "volume": 52000,
+      "ratio": 0.0187
+    },
+    "priceLevel": {
+      "high": 95000,
+      "mid": 135000,
+      "low": 48000
+    },
+    "source": "naver-crawler"
+  }
+}

@@ -1,0 +1,172 @@
+{
+  "description": "Naver 수급 데이터 샘플 (종목별)",
+  "note": "각 종목을 테스트하려면 해당 데이터를 smartmoney-data.json으로 복사하세요",
+  "samples": {
+    "005930": {
+      "lastUpdate": "2024-06-24T15:30:00.000Z",
+      "data": {
+        "ticker": "005930",
+        "name": "삼성전자",
+        "date": "2024-06-24",
+        "institution": {
+          "buy": 1850000,
+          "sell": 1420000,
+          "net": 430000,
+          "buyRate": 0.566,
+          "sellRate": 0.434
+        },
+        "foreign": {
+          "buy": 950000,
+          "sell": 780000,
+          "net": 170000,
+          "buyRate": 0.549,
+          "sellRate": 0.451
+        },
+        "shortSell": {
+          "volume": 52000,
+          "ratio": 0.0187
+        },
+        "priceLevel": {
+          "high": 95000,
+          "mid": 135000,
+          "low": 48000
+        },
+        "source": "naver-crawler"
+      }
+    },
+    "000660": {
+      "lastUpdate": "2024-06-24T15:30:00.000Z",
+      "data": {
+        "ticker": "000660",
+        "name": "SK하이닉스",
+        "date": "2024-06-24",
+        "institution": {
+          "buy": 820000,
+          "sell": 950000,
+          "net": -130000,
+          "buyRate": 0.463,
+          "sellRate": 0.537
+        },
+        "foreign": {
+          "buy": 650000,
+          "sell": 720000,
+          "net": -70000,
+          "buyRate": 0.474,
+          "sellRate": 0.526
+        },
+        "shortSell": {
+          "volume": 38000,
+          "ratio": 0.0215
+        },
+        "priceLevel": {
+          "high": 72000,
+          "mid": 98000,
+          "low": 35000
+        },
+        "source": "naver-crawler"
+      }
+    },
+    "035420": {
+      "lastUpdate": "2024-06-24T15:30:00.000Z",
+      "data": {
+        "ticker": "035420",
+        "name": "NAVER",
+        "date": "2024-06-24",
+        "institution": {
+          "buy": 1200000,
+          "sell": 850000,
+          "net": 350000,
+          "buyRate": 0.585,
+          "sellRate": 0.415
+        },
+        "foreign": {
+          "buy": 780000,
+          "sell": 620000,
+          "net": 160000,
+          "buyRate": 0.557,
+          "sellRate": 0.443
+        },
+        "shortSell": {
+          "volume": 28000,
+          "ratio": 0.0142
+        },
+        "priceLevel": {
+          "high": 85000,
+          "mid": 112000,
+          "low": 45000
+        },
+        "source": "naver-crawler"
+      }
+    },
+    "035720": {
+      "lastUpdate": "2024-06-24T15:30:00.000Z",
+      "data": {
+        "ticker": "035720",
+        "name": "카카오",
+        "date": "2024-06-24",
+        "institution": {
+          "buy": 650000,
+          "sell": 780000,
+          "net": -130000,
+          "buyRate": 0.454,
+          "sellRate": 0.546
+        },
+        "foreign": {
+          "buy": 420000,
+          "sell": 520000,
+          "net": -100000,
+          "buyRate": 0.447,
+          "sellRate": 0.553
+        },
+        "shortSell": {
+          "volume": 32000,
+          "ratio": 0.0198
+        },
+        "priceLevel": {
+          "high": 58000,
+          "mid": 82000,
+          "low": 38000
+        },
+        "source": "naver-crawler"
+      }
+    },
+    "NVDA": {
+      "lastUpdate": "2024-06-24T16:00:00.000Z",
+      "data": {
+        "ticker": "NVDA",
+        "name": "NVIDIA",
+        "date": "2024-06-24",
+        "institution": {
+          "buy": 2150000,
+          "sell": 1620000,
+          "net": 530000,
+          "buyRate": 0.571,
+          "sellRate": 0.429
+        },
+        "foreign": {
+          "buy": 1820000,
+          "sell": 1350000,
+          "net": 470000,
+          "buyRate": 0.574,
+          "sellRate": 0.426
+        },
+        "shortSell": {
+          "volume": 95000,
+          "ratio": 0.0156
+        },
+        "priceLevel": {
+          "high": 152000,
+          "mid": 198000,
+          "low": 75000
+        },
+        "source": "naver-crawler"
+      }
+    }
+  },
+  "usage": {
+    "step1": "원하는 종목의 data 섹션을 복사",
+    "step2": "smartmoney-data.json 파일에 붙여넣기",
+    "step3": "앱 새로 고침 (F5)",
+    "step4": "세력 추적 분석 확인"
+  }
+}

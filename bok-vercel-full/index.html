@@ -1,0 +1,1043 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="api-origin" content="" />
+    <title>BOK 투자 | 주식 분석기</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-theme="dark">
+    <section class="login-screen" id="loginScreen" aria-label="로그인">
+      <form class="login-card" id="loginForm">
+        <div>
+          <p class="eyebrow">Private dashboard</p>
+          <h1>BOK 투자</h1>
+          <p class="login-mode-copy" id="authModeCopy">아이디와 패스워드로 로그인하세요.</p>
+        </div>
+        <label class="login-field">
+          <span>아이디</span>
+          <input id="loginId" type="text" autocomplete="username" required />
+        </label>
+        <label class="login-field">
+          <span>패스워드</span>
+          <input id="loginPassword" type="password" autocomplete="current-password" required />
+        </label>
+        <label class="login-remember">
+          <input id="rememberLogin" type="checkbox" />
+          <span>로그인 유지</span>
+        </label>
+        <p class="login-error" id="loginError" role="alert"></p>
+        <button class="login-submit" id="authSubmitBtn" type="submit">로그인</button>
+        <button class="login-toggle" id="authModeToggleBtn" type="button">새 계정 만들기</button>
+      </form>
+    </section>
+
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="주요 메뉴">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">B</span>
+          <div>
+            <strong>BOK 투자</strong>
+            <span>Stock Analytics</span>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item active" type="button" aria-current="page" data-view-target="dashboard">
+            <span aria-hidden="true">⌁</span>
+            예측 대시보드
+          </button>
+          <button class="nav-item" type="button" data-view-target="ai">
+            <span aria-hidden="true">✦</span>
+            AI 인사이트
+          </button>
+          <button class="nav-item" type="button" data-view-target="dante">
+            <span aria-hidden="true">⌬</span>
+            단테 기법
+          </button>
+          <button class="nav-item" type="button" data-view-target="smartmoney">
+            <span aria-hidden="true">◇</span>
+            세력 추적 분석
+          </button>
+          <button class="nav-item" type="button" data-view-target="risk">
+            <span aria-hidden="true">◫</span>
+            리스크 분석
+          </button>
+          <button class="nav-item" type="button" data-view-target="models">
+            <span aria-hidden="true">≋</span>
+            모델 분석
+          </button>
+          <button class="nav-item" type="button" data-view-target="watchlist">
+            <span aria-hidden="true">▤</span>
+            관심종목/등록
+          </button>
+        </nav>
+
+        <section class="sidebar-panel">
+          <span class="panel-label">오늘의 경계값</span>
+          <div class="threshold-row">
+            <span>변동성</span>
+            <strong id="volatilityLabel">중립</strong>
+          </div>
+          <div class="threshold-row">
+            <span>시장 국면</span>
+            <strong id="regimeLabel">상승 둔화</strong>
+          </div>
+        </section>
+
+        <button class="nav-item admin-only" type="button" data-view-target="admin">
+          <span aria-hidden="true">⚙</span>
+          관리자 페이지
+        </button>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="topbar-actions">
+            <button class="mobile-menu-button" id="mobileMenuBtn" type="button" aria-label="메뉴 열기" aria-expanded="false">
+              <span></span>
+              <span></span>
+              <span></span>
+            </button>
+            <label class="field topbar-symbol-field">
+              <span>종목</span>
+              <select id="tickerSelect">
+              </select>
+            </label>
+            <div class="theme-switch" aria-label="테마 선택">
+              <span aria-hidden="true">☼</span>
+              <button id="themeToggleBtn" type="button" role="switch" aria-checked="false" aria-label="다크모드 전환">
+                <i></i>
+              </button>
+              <span aria-hidden="true">☾</span>
+            </div>
+            <button class="icon-button" id="refreshBtn" type="button" title="새로 계산" aria-label="새로 계산">↻</button>
+          </div>
+        </header>
+        <div class="data-status-bar" id="dataStatusBar" role="status">
+          데이터 API 연결 상태를 확인하고 있습니다.
+        </div>
+
+        <section class="view-panel active" data-view="dashboard">
+        <section class="market-strip" aria-label="주요 시장 지수">
+          <article>
+            <span>KOSPI</span>
+            <strong id="kospiValue">2,742.3</strong>
+            <em id="kospiChange">+0.8%</em>
+            <small id="kospiSource">종가</small>
+          </article>
+          <article>
+            <span>KOSDAQ</span>
+            <strong id="kosdaqValue">872.1</strong>
+            <em id="kosdaqChange">+0.4%</em>
+            <small id="kosdaqSource">종가</small>
+          </article>
+          <article>
+            <span>NASDAQ</span>
+            <strong id="nasdaqValue">16,384.2</strong>
+            <em id="nasdaqChange">+1.1%</em>
+            <small id="nasdaqSource">종가</small>
+          </article>
+          <article>
+            <span>S&P 500</span>
+            <strong id="sp500Value">5,178.8</strong>
+            <em id="sp500Change">+0.6%</em>
+            <small id="sp500Source">종가</small>
+          </article>
+          <article>
+            <span>DOW</span>
+            <strong id="dowValue">39,424.7</strong>
+            <em id="dowChange">-0.2%</em>
+            <small id="dowSource">종가</small>
+          </article>
+        </section>
+
+        <section class="hero-grid">
+          <article class="chart-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Forecast</p>
+                <div class="forecast-title-row">
+                  <h2 id="chartTitle">NVDA 14일 예측</h2>
+                  <div class="status-pill" id="signalPill">매수 우위</div>
+                </div>
+              </div>
+              <label class="forecast-horizon-field horizon-inline-field">
+                <span>예측기간</span>
+                <select id="horizonSelect">
+                  <option value="7">7일</option>
+                  <option value="14" selected>14일</option>
+                  <option value="30">30일</option>
+                  <option value="60">60일</option>
+                </select>
+              </label>
+            </div>
+            <canvas id="forecastCanvas" width="980" height="420" aria-label="가격 예측 차트"></canvas>
+            <div class="chart-legend">
+              <span><i class="dot actual"></i>실제 가격</span>
+              <span><i class="dot forecast"></i>예측 가격</span>
+              <span><i class="dot band"></i>신뢰 구간</span>
+            </div>
+          </article>
+
+          <aside class="insight-panel">
+            <div class="live-price-card">
+              <span>현재 주가</span>
+              <strong id="livePriceValue">-</strong>
+              <em id="livePriceChange">시세 확인 중</em>
+              <small id="livePriceSource">-</small>
+              <small id="livePriceUpdated">-</small>
+            </div>
+            <div class="score-block">
+              <span>예측 점수</span>
+              <strong id="scoreValue">72</strong>
+              <p id="scoreCopy">상승 확률이 우세하지만 변동성 관리가 필요합니다.</p>
+            </div>
+            <div class="prediction-opinion-card" id="dashboardOpinionCard">
+              <div class="opinion-head">
+                <span>AI 투자의견</span>
+                <strong id="dashboardOpinionLabel">중립</strong>
+              </div>
+              <div class="opinion-scale" aria-label="5단계 투자의견">
+                <span>강력매도</span>
+                <span>매도</span>
+                <span>중립</span>
+                <span>매수</span>
+                <span>강력매수</span>
+              </div>
+              <div class="opinion-level" id="dashboardOpinionLevel" data-level="3"></div>
+              <ul class="opinion-price-list">
+                <li><span>목표가</span><strong id="dashboardTargetPrice">-</strong></li>
+                <li><span>손절가</span><strong id="dashboardStopPrice">-</strong></li>
+                <li><span>관찰가</span><strong id="dashboardWatchPrice">-</strong></li>
+              </ul>
+              <p id="dashboardOpinionCopy">예측 결과를 5단계 의견으로 해석합니다.</p>
+            </div>
+            <div class="metric-list">
+              <div>
+                <span>예상 수익률 <small>예측기간 기대 가격 변화율</small></span>
+                <strong id="returnMetric">+4.8%</strong>
+              </div>
+              <div>
+                <span>하방 리스크 <small>잠재 하락폭 기준</small></span>
+                <strong id="riskMetric">-2.6%</strong>
+              </div>
+              <div>
+                <span>신뢰도 <small>예측 안정성</small></span>
+                <strong id="confidenceMetric">68%</strong>
+              </div>
+            </div>
+          </aside>
+        </section>
+
+        <section class="lower-grid">
+          <article class="tool-panel recommendation-panel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Decision</p>
+                <h2>전략 제안</h2>
+              </div>
+            </div>
+            <ul id="recommendationList" class="recommendation-list"></ul>
+          </article>
+        </section>
+
+        <section class="intelligence-grid">
+          <article class="tool-panel peer-panel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Peer analysis</p>
+                <h2>유사 업종 비교</h2>
+              </div>
+            </div>
+            <canvas id="radarCanvas" width="480" height="320" aria-label="재무 지표 레이더"></canvas>
+          </article>
+
+          <article class="tool-panel weather-panel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Weather</p>
+                <h2>투자 지표 날씨</h2>
+              </div>
+            </div>
+            <div class="weather-grid" id="weatherGrid"></div>
+          </article>
+
+          <article class="tool-panel company-issues-panel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Issues</p>
+                <h2>기업 이슈</h2>
+              </div>
+            </div>
+            <div class="issue-news-grid">
+              <section class="issue-column" aria-label="기업 이슈 요약">
+                <h3>핵심 이슈</h3>
+                <ul class="issue-list" id="issueList"></ul>
+              </section>
+              <section class="issue-column" aria-label="관련 뉴스 헤드라인">
+                <h3>최근 뉴스 헤드라인</h3>
+                <ul class="news-list" id="newsList"></ul>
+              </section>
+            </div>
+          </article>
+        </section>
+        </section>
+
+        <section class="view-panel" data-view="dante" aria-label="단테 기법">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Dante style checklist</p>
+              <h2>단테 기법</h2>
+            </div>
+            <div class="status-pill" id="danteSignalPill">분석 대기</div>
+          </div>
+
+          <div class="dante-grid">
+            <article class="chart-panel dante-chart-panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">Core setup</p>
+                  <h2>224일선·눌림목 프록시 분석</h2>
+                </div>
+              </div>
+              <div class="dante-score">
+                <strong id="danteScoreValue">0</strong>
+                <div>
+                  <span id="dantePatternName">패턴 확인 중</span>
+                  <p id="dantePatternCopy">장기선, 거래량, 눌림목, 돌파 조건을 종합합니다.</p>
+                </div>
+              </div>
+              <canvas id="danteCanvas" width="980" height="360" aria-label="단테 기법 차트"></canvas>
+              <div class="chart-legend dante-legend">
+                <span><i class="dot actual"></i>가격</span>
+                <span><i class="dot dante-short"></i>3일선</span>
+                <span><i class="dot dante-long"></i>224일선 프록시</span>
+                <span><i class="dot dante-force"></i>세력 평단</span>
+                <span><i class="dot dante-buy"></i>제안 매수라인</span>
+                <span><i class="dot dante-risk"></i>리스크 라인</span>
+              </div>
+              <div class="dante-principles">
+                <h3>적용한 원칙</h3>
+                <ul class="method-list">
+                  <li><strong>224일선 기준</strong><span>장기선 위는 매수세 우위, 아래는 매도세 우위로 해석합니다.</span></li>
+                  <li><strong>밥그릇 3번자리</strong><span>하락 후 횡보와 매집 흔적, 거래량 돌파가 겹치는 구간을 점검합니다.</span></li>
+                  <li><strong>세력 매집봉</strong><span>횡보 뒤 평균보다 큰 거래량과 긴 윗꼬리 봉을 매집 흔적 프록시로 봅니다.</span></li>
+                  <li><strong>세력 평단</strong><span>매집봉의 고가·저가·종가 평균 부근을 분할 접근 후보 가격으로 추정합니다.</span></li>
+                  <li><strong>3일선 언덕</strong><span>단기 눌림 이후 3일 평균 회복 여부를 상승 재개 신호로 봅니다.</span></li>
+                  <li><strong>N자 파동</strong><span>1차 상승, 거래량 감소 조정, 전고점 재돌파 순서가 맞는지 확인합니다.</span></li>
+                  <li><strong>박스권 돌파</strong><span>횡보 상단을 거래량과 함께 넘는 구간을 세력 개입 확인 지점으로 봅니다.</span></li>
+                  <li><strong>손절 우선</strong><span>기준봉 저가, 지지라인 이탈, 거래량 실종을 리스크 라인으로 먼저 확인합니다.</span></li>
+                </ul>
+              </div>
+            </article>
+          </div>
+
+          <aside class="insight-panel dante-observation-panel">
+            <div class="dante-observation-summary">
+              <div class="score-block compact-score">
+                <span>관찰 가격</span>
+                <strong id="danteWatchPrice">-</strong>
+                <p id="danteRiskLine">손절 기준을 계산합니다.</p>
+              </div>
+              <div class="metric-list">
+                <div>
+                  <span>거래량 강도</span>
+                  <strong id="danteVolumePower">-</strong>
+                </div>
+                <div>
+                  <span>장기선 위치</span>
+                  <strong id="danteLongLineState">-</strong>
+                </div>
+                <div>
+                  <span>눌림 상태</span>
+                  <strong id="dantePullbackState">-</strong>
+                </div>
+                <div>
+                  <span>제안 매수라인</span>
+                  <strong id="danteBuyLineMetric">-</strong>
+                </div>
+              </div>
+            </div>
+            <div class="dante-checklist" id="danteChecklist"></div>
+          </aside>
+
+          <div class="dante-method-grid">
+            <article class="tool-panel wide">
+              <h3>관심 종목 단테 점수</h3>
+              <div class="table-shell compact-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>종목</th>
+                      <th>점수</th>
+                      <th>패턴</th>
+                      <th>장기선</th>
+                      <th>거래량</th>
+                      <th>리스크 라인</th>
+                    </tr>
+                  </thead>
+                  <tbody id="danteRankingBody"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+
+          <div class="dante-learning-grid">
+            <article class="tool-panel">
+              <h3>영상 기반 보완 규칙</h3>
+              <div class="dante-rule-list" id="danteVideoRuleList"></div>
+            </article>
+
+            <article class="tool-panel">
+              <h3>단테식 실행 플레이북</h3>
+              <ul class="method-list" id="dantePlaybookList"></ul>
+            </article>
+          </div>
+        </section>
+
+        <section class="view-panel" data-view="smartmoney" aria-label="세력 추적 분석">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Smart Money Tracking</p>
+              <h2>세력 추적 분석 (SMC·ICT)</h2>
+            </div>
+            <div class="status-pill" id="smcSignalPill">분석 대기</div>
+          </div>
+
+          <article class="tool-panel smart-money-framework">
+            <h3>분석 구조</h3>
+            <p>
+              SMC는 기관과 대형 투자자의 거래 패턴을 추적하는 넓은 프레임으로 사용하고,
+              ICT는 그 안에서 시장 구조, 유동성 확보, 페이크 무브, 가격 비효율을 더 촘촘하게 해석하는 보완 레이어로 적용합니다.
+            </p>
+          </article>
+
+          <div class="smart-money-tabs" role="tablist" aria-label="세력 추적 분석 탭">
+            <button class="active" type="button" role="tab" aria-selected="true" data-smart-tab="smc">SMC 큰 틀</button>
+            <button type="button" role="tab" aria-selected="false" data-smart-tab="ict">ICT 정밀 해석</button>
+          </div>
+
+          <div class="smart-money-tab-panel active" data-smart-panel="smc">
+          <div class="smart-money-grid">
+            <article class="chart-panel smart-money-chart-panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">SMC framework</p>
+                  <h2>기관·대형 투자자 거래 패턴 추적</h2>
+                </div>
+              </div>
+              <div class="smart-money-score">
+                <strong id="smcScoreValue">0</strong>
+                <div>
+                  <span id="smcSetupName">종목 등록 대기</span>
+                  <p id="smcSetupCopy">BOS/CHOCH, 유동성 스윕, FVG, 오더블록으로 세력 흔적을 종합합니다.</p>
+                </div>
+              </div>
+              <canvas id="smcCanvas" width="980" height="380" aria-label="SMC 차트 분석"></canvas>
+              <div class="chart-legend smart-money-legend">
+                <span><i class="dot actual"></i>가격</span>
+                <span><i class="dot smc-fvg"></i>FVG</span>
+                <span><i class="dot smc-ob"></i>오더블록</span>
+                <span><i class="dot smc-liquidity"></i>유동성</span>
+                <span><i class="dot smc-mid"></i>50% 균형</span>
+              </div>
+              <div class="metric-list smart-money-metrics">
+                <div>
+                  <span>구조 상태</span>
+                  <strong id="smcStructureMetric">-</strong>
+                </div>
+                <div>
+                  <span>유동성 스윕</span>
+                  <strong id="smcSweepMetric">-</strong>
+                </div>
+                <div>
+                  <span>FVG 위치</span>
+                  <strong id="smcFvgMetric">-</strong>
+                </div>
+                <div>
+                  <span>오더블록</span>
+                  <strong id="smcOrderBlockMetric">-</strong>
+                </div>
+              </div>
+            </article>
+
+            <aside class="insight-panel smart-money-summary">
+              <div class="smart-money-checklist" id="smcChecklist"></div>
+            </aside>
+          </div>
+
+          <div class="smart-money-method-grid smc-method-grid">
+            <article class="tool-panel">
+              <h3>SMC 해석</h3>
+              <ul class="method-list" id="smcInterpretation"></ul>
+            </article>
+            <article class="tool-panel smc-principle-panel">
+              <h3>SMC 적용 원칙</h3>
+              <ul class="method-list smc-principle-list">
+                <li><strong>BOS / CHOCH</strong><span>직전 스윙 고점·저점 돌파로 추세 지속 또는 성격 변화를 판정합니다.</span></li>
+                <li><strong>Liquidity sweep</strong><span>이전 고점 위나 저점 아래를 찌른 뒤 종가가 되돌아오는 움직임을 유동성 회수로 봅니다.</span></li>
+                <li><strong>Order block</strong><span>구조 돌파 전 마지막 반대색 캔들 구간을 잠재 기관 주문 구간으로 표시합니다.</span></li>
+                <li><strong>Premium / discount</strong><span>최근 스윙 범위의 50% 아래는 매수 관찰, 위쪽은 차익·매도 우위 구간으로 해석합니다.</span></li>
+              </ul>
+            </article>
+          </div>
+          </div>
+
+          <div class="smart-money-subsection smart-money-tab-panel" data-smart-panel="ict" aria-label="ICT 정밀 해석">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">ICT refinement layer</p>
+              <h2>ICT 정밀 해석</h2>
+            </div>
+            <div class="status-pill" id="ictSignalPill">분석 대기</div>
+          </div>
+
+          <div class="smart-money-grid">
+            <article class="chart-panel smart-money-chart-panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">Price delivery</p>
+                  <h2>시장 구조·유동성·페이크 무브 보완</h2>
+                </div>
+              </div>
+              <div class="smart-money-score">
+                <strong id="ictScoreValue">0</strong>
+                <div>
+                  <span id="ictSetupName">종목 등록 대기</span>
+                  <p id="ictSetupCopy">기관의 유동성 확보, 가격 조작성 스윕, FVG·OTE 되돌림 구간을 점검합니다.</p>
+                </div>
+              </div>
+              <canvas id="ictCanvas" width="980" height="380" aria-label="ICT 차트 분석"></canvas>
+              <div class="chart-legend smart-money-legend">
+                <span><i class="dot actual"></i>가격</span>
+                <span><i class="dot smc-fvg"></i>FVG</span>
+                <span><i class="dot smc-ob"></i>OB/Breaker</span>
+                <span><i class="dot smc-liquidity"></i>BSL/SSL</span>
+                <span><i class="dot ict-ote"></i>OTE</span>
+              </div>
+            </article>
+
+            <aside class="insight-panel smart-money-summary">
+              <div class="metric-list ict-metrics">
+                <div>
+                  <span>가격 전달</span>
+                  <strong id="ictDeliveryMetric">-</strong>
+                </div>
+                <div>
+                  <span>OTE 구간</span>
+                  <strong id="ictOteMetric">-</strong>
+                </div>
+                <div>
+                  <span>유동성 타깃</span>
+                  <strong id="ictLiquidityMetric">-</strong>
+                </div>
+                <div>
+                  <span>진입 품질</span>
+                  <strong id="ictEntryMetric">-</strong>
+                </div>
+              </div>
+              <div class="smart-money-checklist" id="ictChecklist"></div>
+            </aside>
+          </div>
+
+          <div class="smart-money-method-grid ict-method-grid">
+            <article class="tool-panel">
+              <h3>ICT 해석</h3>
+              <ul class="method-list" id="ictInterpretation"></ul>
+            </article>
+            <article class="tool-panel">
+              <h3>ICT 보완 원칙</h3>
+              <ul class="method-list">
+                <li><strong>Fair Value Gap</strong><span>3개 캔들에서 1번과 3번 캔들의 꼬리가 겹치지 않는 가격 비효율 구간을 표시합니다.</span></li>
+                <li><strong>Liquidity pool</strong><span>스윙 고점 위 매수 유동성, 스윙 저점 아래 매도 유동성을 다음 목표 후보로 봅니다.</span></li>
+                <li><strong>OTE</strong><span>최근 스윙의 62~79% 되돌림을 최적 진입 관찰 구간으로 계산합니다.</span></li>
+                <li><strong>Displacement</strong><span>평균보다 큰 몸통과 거래량을 동반한 강한 이동을 기관성 가격 전달 신호로 봅니다.</span></li>
+              </ul>
+            </article>
+            <article class="tool-panel">
+              <h3>GitHub 참조 보완</h3>
+              <ul class="method-list">
+                <li><strong>smart-money-concepts</strong><span>FVG, Swing High/Low, BOS/CHoCH, OB, Liquidity 지표 구조를 참고해 서비스 계산 항목을 맞췄습니다.</span></li>
+                <li><strong>ss_smc</strong><span>ICT에서 FVG 완화, OB 강도, 유동성 레벨과 Swept 상태를 분리하는 방식을 반영했습니다.</span></li>
+                <li><strong>Quant-Edge-Indicators</strong><span>SMC를 시장구조·유동성 구간·FVG를 함께 보는 TradingView식 분석 화면으로 보완했습니다.</span></li>
+              </ul>
+            </article>
+            <article class="tool-panel">
+              <h3>서비스 적용 방식</h3>
+              <ul class="method-list">
+                <li><strong>SMC 큰 틀</strong><span>기관·대형 투자자의 누적 주문 흔적을 구조, 오더블록, 프리미엄/디스카운트로 먼저 판정합니다.</span></li>
+                <li><strong>ICT 정밀 보완</strong><span>유동성 회수, 페이크 무브, FVG, OTE, Displacement로 실제 진입 품질을 다시 좁혀 봅니다.</span></li>
+                <li><strong>주의</strong><span>SMC/ICT는 보조 해석 체계이므로 실시간 가격, 거래량, 리스크 라인과 함께 확인해야 합니다.</span></li>
+              </ul>
+            </article>
+          </div>
+          </div>
+        </section>
+
+        <section class="view-panel" data-view="watchlist" aria-label="관심 종목">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Watchlist</p>
+              <h2>관심 종목</h2>
+            </div>
+            <div class="section-actions">
+              <button class="ghost-button" id="sortWatchlistBtn" type="button">점수순 정렬</button>
+              <button class="ghost-button danger-action" id="deleteSelectedWatchlistBtn" type="button">선택 삭제</button>
+              <button class="secondary-button" id="openSymbolModalBtn" type="button">종목 추가</button>
+            </div>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th class="select-column"><input id="selectAllWatchlist" type="checkbox" aria-label="관심종목 전체 선택" /></th>
+                  <th>종목</th>
+                  <th>현재가</th>
+                  <th>예상 수익률</th>
+                  <th>리스크</th>
+                  <th>신뢰도</th>
+                  <th>점수</th>
+                  <th>신호</th>
+                  <th>관리</th>
+                </tr>
+              </thead>
+              <tbody id="watchlistBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view-panel" data-view="risk" aria-label="리스크 분석">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Risk</p>
+              <h2>리스크 분석</h2>
+            </div>
+          </div>
+          <div class="analytics-grid">
+            <article class="tool-panel">
+              <h3>리스크 요약</h3>
+              <div class="metric-list dense">
+                <div>
+                  <span>일간 변동성</span>
+                  <strong id="dailyVolMetric">0.0%</strong>
+                </div>
+                <div>
+                  <span>최대 낙폭</span>
+                  <strong id="drawdownMetric">0.0%</strong>
+                </div>
+                <div>
+                  <span>95% VaR</span>
+                  <strong id="varMetric">0.0%</strong>
+                </div>
+                <div>
+                  <span>위험 등급</span>
+                  <strong id="riskGradeMetric">중립</strong>
+                </div>
+              </div>
+            </article>
+            <article class="tool-panel wide">
+              <h3>스트레스 테스트</h3>
+              <div class="stress-list" id="stressList"></div>
+            </article>
+          </div>
+
+          <article class="tool-panel risk-opinion-panel">
+            <div>
+              <p class="eyebrow">Risk opinion</p>
+              <h3>투자의견</h3>
+            </div>
+            <div class="risk-opinion">
+              <div class="risk-opinion-score">
+                <span>리스크 점수</span>
+                <strong id="riskOpinionScore">0</strong>
+                <em id="riskOpinionLabel">분석 대기</em>
+              </div>
+              <div>
+                <p id="riskOpinionCopy">리스크 지표를 종합해 투자의견을 계산합니다.</p>
+                <ul id="riskOpinionReasons"></ul>
+              </div>
+            </div>
+          </article>
+
+          <div class="risk-grid">
+            <article class="tool-panel">
+              <h3>손실 시나리오</h3>
+              <div class="risk-card-grid">
+                <div class="risk-card">
+                  <span>99% VaR</span>
+                  <strong id="var99Metric">0.0%</strong>
+                  <p>극단 구간의 단일 손실 한계 추정</p>
+                </div>
+                <div class="risk-card">
+                  <span>CVaR 95%</span>
+                  <strong id="cvar95Metric">0.0%</strong>
+                  <p>VaR를 넘는 최악 손실의 평균</p>
+                </div>
+                <div class="risk-card">
+                  <span>회복 필요 수익률</span>
+                  <strong id="recoveryMetric">0.0%</strong>
+                  <p>최대 낙폭 이후 원금 회복에 필요한 상승률</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="tool-panel">
+              <h3>위험조정 성과</h3>
+              <div class="risk-card-grid">
+                <div class="risk-card">
+                  <span>Sharpe 추정</span>
+                  <strong id="riskSharpeMetric">0.00</strong>
+                  <p>전체 변동성 대비 초과수익</p>
+                </div>
+                <div class="risk-card">
+                  <span>Sortino 추정</span>
+                  <strong id="sortinoMetric">0.00</strong>
+                  <p>하방 변동성만 반영한 보상비율</p>
+                </div>
+                <div class="risk-card">
+                  <span>하방 변동성</span>
+                  <strong id="downsideVolMetric">0.0%</strong>
+                  <p>손실 방향 움직임의 연환산 변동성</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="tool-panel">
+              <h3>포지션 관리</h3>
+              <div class="risk-card-grid">
+                <div class="risk-card">
+                  <span>제안 손절가</span>
+                  <strong id="stopPriceMetric">-</strong>
+                  <p>ATR 1.5배 기준 변동성 손절선</p>
+                </div>
+                <div class="risk-card">
+                  <span>1회 손실률</span>
+                  <strong id="tradeRiskMetric">0.0%</strong>
+                  <p>현재가에서 손절가까지의 거리</p>
+                </div>
+                <div class="risk-card">
+                  <span>2% Rule 권장 비중</span>
+                  <strong id="positionWeightMetric">0.0%</strong>
+                  <p>한 거래 손실을 총자본 2%로 제한</p>
+                </div>
+                <div class="risk-card">
+                  <span>Quarter Kelly</span>
+                  <strong id="kellyWeightMetric">0.0%</strong>
+                  <p>Kelly 비중을 1/4로 낮춘 보수 비중</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="tool-panel">
+              <h3>전문가 원칙</h3>
+              <div class="risk-card-grid">
+                <div class="risk-card">
+                  <span>안전마진</span>
+                  <strong id="safetyMarginMetric">0.0%</strong>
+                  <p id="valuationRiskCopy">예상가와 현재가의 완충 폭</p>
+                </div>
+                <div class="risk-card">
+                  <span>Buffett</span>
+                  <strong>이해 범위</strong>
+                  <p>모르는 사업과 과도한 확신을 가장 큰 위험으로 봅니다.</p>
+                </div>
+                <div class="risk-card">
+                  <span>Graham</span>
+                  <strong>안전마진</strong>
+                  <p>내재가치 대비 충분한 할인 폭이 리스크 완충재입니다.</p>
+                </div>
+                <div class="risk-card">
+                  <span>Kelly</span>
+                  <strong>비중 통제</strong>
+                  <p>우위가 있어도 과도한 베팅은 파산 위험을 키웁니다.</p>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view-panel" data-view="models" aria-label="모델 분석">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Prediction lab</p>
+              <h2>모델 분석</h2>
+            </div>
+            <div class="section-actions" id="compareTickerControls" aria-label="비교 종목 선택"></div>
+          </div>
+
+          <div class="model-grid">
+            <article class="chart-panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">Multi stock</p>
+                  <h2>다중 종목 비교</h2>
+                </div>
+                <div class="status-pill">최대 5개</div>
+              </div>
+              <canvas id="compareCanvas" width="980" height="360" aria-label="다중 종목 비교 차트"></canvas>
+              <div class="chart-legend" id="compareLegend"></div>
+            </article>
+
+            <aside class="insight-panel">
+              <div class="score-block">
+                <span>추천 종목</span>
+                <strong id="topModelPick">-</strong>
+                <p id="topModelCopy">모델 조합과 기술 지표를 기준으로 추천을 계산합니다.</p>
+              </div>
+              <div class="metric-list">
+                <div>
+                  <span>모델 합의도</span>
+                  <strong id="modelAgreementMetric">0%</strong>
+                </div>
+                <div>
+                  <span>추세 강도</span>
+                  <strong id="trendStrengthMetric">중립</strong>
+                </div>
+                <div>
+                  <span>과열/침체</span>
+                  <strong id="rsiStateMetric">중립</strong>
+                </div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="analytics-grid model-lower-grid">
+            <article class="tool-panel">
+              <h3>모델별 예측</h3>
+              <div class="model-card-list" id="modelCardList"></div>
+            </article>
+
+            <article class="tool-panel wide">
+              <h3>추천 랭킹</h3>
+              <div class="table-shell compact-table model-ranking-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>종목</th>
+                      <th>LR</th>
+                      <th>ARIMA</th>
+                      <th>LSTM형</th>
+                      <th>RSI</th>
+                      <th>추천</th>
+                    </tr>
+                  </thead>
+                  <tbody id="modelRankingBody"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view-panel" data-view="ai" aria-label="AI 인사이트">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">AI stock dashboard</p>
+              <h2>AI 인사이트</h2>
+            </div>
+            <div class="status-pill" id="aiSignalPill">분석 대기</div>
+          </div>
+
+          <div class="ai-metric-grid">
+            <article>
+              <span>현재가</span>
+              <strong id="aiCurrentPrice">-</strong>
+              <em id="aiPriceChange">-</em>
+            </article>
+            <article>
+              <span>거래량 강도</span>
+              <strong id="aiVolumeRatio">-</strong>
+              <em>20일 평균 대비</em>
+            </article>
+            <article>
+              <span>RSI 14</span>
+              <strong id="aiRsiValue">-</strong>
+              <em id="aiRsiLabel">-</em>
+            </article>
+            <article>
+              <span>SMA 20 괴리</span>
+              <strong id="aiSmaDistance">-</strong>
+              <em id="aiSmaLabel">-</em>
+            </article>
+            <article>
+              <span>시가총액 등급</span>
+              <strong id="aiCapGrade">-</strong>
+              <em id="aiBetaLabel">-</em>
+            </article>
+          </div>
+
+          <div class="ai-grid">
+            <article class="chart-panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">Technical</p>
+                  <h2>고급 기술 분석</h2>
+                </div>
+              </div>
+              <canvas id="technicalCanvas" width="980" height="420" aria-label="고급 기술 분석 차트"></canvas>
+              <div class="technical-legend" aria-label="고급 기술 분석 색상 정의">
+                <span><i class="dot technical-price"></i>가격</span>
+                <span><i class="dot technical-sma"></i>SMA20</span>
+                <span><i class="dot technical-band"></i>볼린저 밴드</span>
+                <span><i class="dot technical-macd"></i>MACD</span>
+                <span><i class="dot technical-signal"></i>Signal</span>
+                <span><i class="dot technical-rsi"></i>RSI</span>
+              </div>
+            </article>
+
+            <aside class="insight-panel">
+              <div class="score-block">
+                <span>다음 거래일 AI 예측</span>
+                <strong id="aiPredictionPrice">-</strong>
+                <p id="aiPredictionCopy">기술지표 기반 예측을 계산합니다.</p>
+              </div>
+              <div class="prediction-opinion-card ai-opinion-card" id="aiOpinionCard">
+                <div class="opinion-head">
+                  <span>AI 투자의견</span>
+                  <strong id="aiOpinionLabel">중립</strong>
+                </div>
+                <div class="opinion-scale" aria-label="5단계 투자의견">
+                  <span>강력매도</span>
+                  <span>매도</span>
+                  <span>중립</span>
+                  <span>매수</span>
+                  <span>강력매수</span>
+                </div>
+                <div class="opinion-level" id="aiOpinionLevel" data-level="3"></div>
+                <ul class="opinion-price-list">
+                  <li><span>목표가</span><strong id="aiTargetPrice">-</strong></li>
+                  <li><span>손절가</span><strong id="aiStopPrice">-</strong></li>
+                  <li><span>관찰가</span><strong id="aiWatchPrice">-</strong></li>
+                </ul>
+                <p id="aiOpinionCopy">다음 거래일 예측을 5단계 의견으로 해석합니다.</p>
+              </div>
+              <div class="metric-list">
+                <div>
+                  <span>모델 신뢰도</span>
+                  <strong id="aiConfidence">-</strong>
+                </div>
+                <div>
+                  <span>연환산 변동성</span>
+                  <strong id="aiVolatility">-</strong>
+                </div>
+                <div>
+                  <span>Sharpe 추정</span>
+                  <strong id="aiSharpe">-</strong>
+                </div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="ai-detail-grid">
+            <article class="tool-panel">
+              <h3>AI 시장 해석</h3>
+              <ul class="ai-insight-list" id="aiInsightList"></ul>
+            </article>
+            <article class="tool-panel">
+              <h3>특징 중요도</h3>
+              <div class="importance-list" id="featureImportanceList"></div>
+            </article>
+            <article class="tool-panel">
+              <h3>회사 정보</h3>
+              <div class="company-info-list" id="companyInfoList"></div>
+            </article>
+          </div>
+
+          <div class="tool-panel ai-table-panel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Data</p>
+                <h2>최근 기술지표 데이터</h2>
+              </div>
+              <button class="ghost-button" id="downloadAiDataBtn" type="button">CSV 다운로드</button>
+            </div>
+            <div class="table-shell compact-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>일자</th>
+                    <th>종가</th>
+                    <th>RSI</th>
+                    <th>MACD</th>
+                    <th>볼린저 상단</th>
+                    <th>볼린저 하단</th>
+                    <th>ATR</th>
+                  </tr>
+                </thead>
+                <tbody id="technicalDataBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view-panel admin-only" data-view="admin" aria-label="관리자 페이지">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Admin</p>
+              <h2>관리자 페이지</h2>
+            </div>
+          </div>
+          <article class="tool-panel">
+            <h3>가입자 관리</h3>
+            <div class="table-shell compact-table admin-user-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>아이디</th>
+                    <th>권한</th>
+                    <th>상태</th>
+                    <th>등록 종목</th>
+                    <th>가입일</th>
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody id="adminUserBody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="symbolModal" hidden>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="symbolModalTitle">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Add symbol</p>
+            <h2 id="symbolModalTitle">종목 선택</h2>
+          </div>
+          <button class="icon-button" id="closeSymbolModalBtn" type="button" aria-label="닫기">×</button>
+        </div>
+
+        <div class="modal-tools">
+          <fieldset class="segmented compact-segmented" aria-label="시장 선택">
+            <label>
+              <input type="radio" name="market" value="all" checked />
+              <span>전체</span>
+            </label>
+            <label>
+              <input type="radio" name="market" value="global" />
+              <span>해외</span>
+            </label>
+            <label>
+              <input type="radio" name="market" value="domestic" />
+              <span>국내</span>
+            </label>
+          </fieldset>
+          <label class="field search-field">
+            <span>검색</span>
+            <input id="symbolSearchInput" type="search" placeholder="티커 또는 회사명" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="symbol-results" id="symbolResults" aria-label="종목 검색 결과"></div>
+        <div class="modal-footer">
+          <button class="secondary-button" id="confirmSymbolBtn" type="button" disabled>선택 종목 등록</button>
+        </div>
+      </section>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
