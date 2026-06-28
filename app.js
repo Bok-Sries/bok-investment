@@ -1667,7 +1667,7 @@ function updateMarketStrip() {
     elements[`${prefix}Change`].title = index.source || displaySource;
     const sourceLabel =
       apiConnectionState.ok === false && !marketIndicesLoaded && !index.fetchedAt
-        ? "API 연결 필요"
+        ? "종가 기준"
         : displayTime
           ? `${displaySource} ${displayTime}`
           : displaySource;
