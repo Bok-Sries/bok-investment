@@ -235,40 +235,6 @@
           데이터 API 연결 상태를 확인하고 있습니다.
         </div>
 
-        <!-- 🆕 종가(일 단위) 기준 신호 알림 제어 -->
-        <div style="padding: 16px; background: var(--bg-secondary); border-radius: 12px; margin: 16px 0; display: flex; gap: 16px; align-items: center;">
-          <div style="flex: 1;">
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-              <span style="font-weight: 600;">🔔 종가 기준 신호 알림</span>
-              <span id="monitoringStatus" style="font-size: 0.85rem; color: var(--muted);">대기</span>
-            </div>
-            <p style="margin: 0; font-size: 0.85rem; opacity: 0.8;">일(日) 단위 종가 기준으로 매수 신호 변화를 감시해 알립니다</p>
-          </div>
-          <div style="display: flex; gap: 12px;">
-            <button id="startMonitoringBtn" type="button" style="padding: 8px 16px; background: var(--success); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">
-              모니터링 시작
-            </button>
-            <button id="stopMonitoringBtn" type="button" style="display: none; padding: 8px 16px; background: var(--red); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">
-              중지
-            </button>
-            <button id="requestNotificationBtn" type="button" style="padding: 8px 16px; background: var(--amber); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">
-              🔊 알림 활성화
-            </button>
-          </div>
-        </div>
-
-        <!-- 🆕 Option C: 알림 히스토리 -->
-        <div id="alertsPanel" style="display: none; padding: 16px; background: var(--bg-secondary); border-radius: 12px; margin-bottom: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h3 style="margin: 0; font-size: 1rem;">최근 알림 (최대 50개)</h3>
-            <button id="clearAlertsBtn" type="button" style="padding: 4px 12px; background: var(--muted); border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem;">
-              🗑️ 모두 삭제
-            </button>
-          </div>
-          <ul id="alertsList" style="margin: 0; padding: 0; list-style: none; max-height: 200px; overflow-y: auto;">
-            <li style="padding: 8px; color: var(--muted); font-size: 0.85rem;">알림이 없습니다</li>
-          </ul>
-        </div>
 
         <section class="view-panel active" data-view="dashboard">
         <section class="market-strip" aria-label="주요 시장 지수">
