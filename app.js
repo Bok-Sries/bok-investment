@@ -2415,7 +2415,7 @@ function calculateSmartMoneySignal(smcPatterns, ictZones, smartMoneyFlow) {
   };
 }
 
-// 🆕 Option C: 실시간 알림 시스템
+// 🆕 종가(일 단위) 기준 신호 알림 시스템
 
 // 🆕 시작 모달 표시 함수
 function showStartModal(ticker, tickerName = "") {
@@ -2589,10 +2589,11 @@ function startSignalMonitoring(ticker) {
     return;  // 조용히 반환 (로그 없음)
   }
 
-  // 5분마다 신호 확인
+  // 종가(일 단위) 기준 신호이므로 장중 1시간마다 재점검한다(실시간 5분 폴링 아님).
+  // 새 일봉 종가가 반영되면 신호 변화가 감지된다.
   const intervalId = setInterval(() => {
     checkSignalChanges(ticker);
-  }, 5 * 60 * 1000); // 5분
+  }, 60 * 60 * 1000); // 1시간
 
   alertStorage.monitoringIntervals[ticker] = intervalId;
   alertStorage.monitoringActive = true;
@@ -2600,7 +2601,7 @@ function startSignalMonitoring(ticker) {
   // 즉시 한 번 확인
   checkSignalChanges(ticker);
 
-  console.log(`✅ ${ticker} 모니터링 시작 (5분 간격)`);
+  console.log(`✅ ${ticker} 종가 기준 신호 감시 시작 (1시간 간격)`);
 }
 
 // 신호 모니터링 중지
@@ -2750,7 +2751,7 @@ function requestNotificationPermission() {
   if (Notification.permission === "granted") {
     console.log("✅ 이미 알림 권한이 있습니다.");
     showToast("✅ 알림이 이미 활성화되었습니다!", "success");
-    sendAlert("🔔 알림 활성화", "BOK 투자 실시간 알림이 활성화되었습니다.", "SYS");
+    sendAlert("🔔 알림 활성화", "BOK 투자 종가 기준 신호 알림이 활성화되었습니다.", "SYS");
     return;
   }
 
@@ -2776,7 +2777,7 @@ function requestNotificationPermission() {
         if (permission === "granted") {
           console.log("✅ 알림 권한이 승인되었습니다!");
           showToast("✅ 알림이 활성화되었습니다!", "success");
-          sendAlert("🔔 알림 활성화", "BOK 투자 실시간 알림이 활성화되었습니다.", "SYS");
+          sendAlert("🔔 알림 활성화", "BOK 투자 종가 기준 신호 알림이 활성화되었습니다.", "SYS");
         } else if (permission === "denied") {
           console.log("❌ 알림 권한이 거부되었습니다.");
           showToast("❌ 알림이 거부되었습니다.", "error");
@@ -6046,7 +6047,7 @@ function render() {
   }
 })();
 
-// 🆕 Option C: 실시간 알림 이벤트 리스너 (DOM 준비 후 등록)
+// 🆕 종가 기준 신호 알림 이벤트 리스너 (DOM 준비 후 등록)
 function setupAlertEventListeners() {
   const startBtn = document.querySelector("#startMonitoringBtn");
   const stopBtn = document.querySelector("#stopMonitoringBtn");
@@ -6065,7 +6066,7 @@ function setupAlertEventListeners() {
       alertStorage.userDisabled = false;
       startSignalMonitoring(ticker);
       updateMonitoringUI();
-      showToast(`✅ ${ticker} 모니터링 시작! (5분 간격으로 신호 감시)`, "success");
+      showToast(`✅ ${ticker} 종가 기준 신호 감시 시작! (일 단위)`, "success");
     });
     console.log("✅ 시작 버튼 리스너 등록됨");
   } else {
@@ -6163,7 +6164,7 @@ function updateMonitoringUI() {
     startBtn.style.display = "none";      // 시작 버튼 숨김
     stopBtn.style.display = "block";      // 중지 버튼 표시
     stopBtn.style.pointerEvents = "auto"; // 클릭 가능하게
-    statusSpan.textContent = "✅ 모니터링 중...";
+    statusSpan.textContent = "✅ 종가 기준 감시 중...";
     statusSpan.style.color = "var(--green)";
   } else {
     // 모니터링 비활성화 상태

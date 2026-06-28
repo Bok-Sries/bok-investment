@@ -231,14 +231,14 @@
           데이터 API 연결 상태를 확인하고 있습니다.
         </div>
 
-        <!-- 🆕 Option C: 실시간 알림 제어 -->
+        <!-- 🆕 종가(일 단위) 기준 신호 알림 제어 -->
         <div style="padding: 16px; background: var(--bg-secondary); border-radius: 12px; margin: 16px 0; display: flex; gap: 16px; align-items: center;">
           <div style="flex: 1;">
             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-              <span style="font-weight: 600;">🔔 실시간 알림</span>
+              <span style="font-weight: 600;">🔔 종가 기준 신호 알림</span>
               <span id="monitoringStatus" style="font-size: 0.85rem; color: var(--muted);">대기</span>
             </div>
-            <p style="margin: 0; font-size: 0.85rem; opacity: 0.8;">신호 변화 감지 시 자동 알림 (5분 간격)</p>
+            <p style="margin: 0; font-size: 0.85rem; opacity: 0.8;">일(日) 단위 종가 기준으로 매수 신호 변화를 감시해 알립니다</p>
           </div>
           <div style="display: flex; gap: 12px;">
             <button id="startMonitoringBtn" type="button" style="padding: 8px 16px; background: var(--success); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">
