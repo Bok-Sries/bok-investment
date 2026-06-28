@@ -6660,7 +6660,10 @@ function switchSignalMarket(market) {
 }
 
 function closeSignalResultModal() {
-  if (signalElements.resultModal) signalElements.resultModal.hidden = true;
+  if (signalElements.resultModal) {
+    signalElements.resultModal.hidden = true;
+    signalElements.resultModal.style.display = "none"; // 인라인 display로 확실히 숨김
+  }
 }
 
 // 🆕 신호기 유니버스(분석 대상) 가져오기: /api/universe, 실패 시 내장 폴백
@@ -6779,6 +6782,7 @@ function showSignalResultModal(market, results, analyzed) {
       : `<p style="color:var(--muted);">상승 조건(점수 15+)을 만족하는 종목이 없습니다.</p>`;
   }
   signalElements.resultModal.hidden = false;
+  signalElements.resultModal.style.display = "flex"; // 인라인 display로 확실히 표시
 }
 
 /**
