@@ -606,17 +606,24 @@ function needsSymbolNameHydration(ticker) {
   return !currentName || currentName === ticker || currentName === getSymbolSearchCode(ticker);
 }
 
+// 🆕 /api/symbol-search 엔드포인트가 없는(정적 호스팅) 환경을 1회 감지하면, 같은 세션에서
+//    더는 호출하지 않아 불필요한 404 반복을 막는다. (배포 환경에서는 정상 200이라 계속 사용)
+let apiSearchBackendMissing = false;
+
 async function hydrateSymbolName(ticker) {
   if (!needsSymbolNameHydration(ticker) || symbolMetaRequests.has(ticker)) return;
+  if (apiSearchBackendMissing) return; // 백엔드 없음 확인됨 → 보강 스킵
   symbolMetaRequests.add(ticker);
   try {
     // 백엔드가 있으면(배포/vercel dev) 종목명을 보강하고, 없으면 아래 catch로 폴백한다.
-    // (예전에는 localhost면 무조건 throw해서 vercel dev 환경에서도 종목명 보강이 동작하지 않았다.)
     const market = isKoreanTicker(ticker) ? "domestic" : "global";
     const response = await fetchApi(`/api/symbol-search?q=${encodeURIComponent(getSymbolSearchCode(ticker))}&market=${market}`, {
       cache: "no-store",
     });
-    if (!response.ok) return;
+    if (!response.ok) {
+      if (response.status === 404) apiSearchBackendMissing = true;
+      return;
+    }
     const payload = await response.json();
     const match = (payload.results || []).find((symbol) => symbol.ticker === ticker) || payload.results?.[0];
     if (match?.ticker === ticker && match.name) {
@@ -719,12 +726,21 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-// 거래량 강도(0~100)를 20일 평균 대비 거래량 비율(volumeRatio)로 환산한다.
-// volumeRatio 1.0(평균) → 50점, 2.0 → 100점, 0.5 → 25점.
-function computeVolumeStrength(indicator) {
+// 거래량 강도(0~100): 거래량의 "크기"와 "가격 방향"을 함께 반영한다.
+// 50 = 중립. 대량 거래 + 상승 → 50 초과(매수 우위), 대량 거래 + 하락 → 50 미만(매도 우위).
+// 거래량이 평균 수준이거나 가격이 보합이면 50 근처에 머문다.
+// (예전에는 거래량 '크기'만 보고 무조건 매수로 해석해, 폭락 시 대량 거래도 "강한 매수"로 잘못 표시됐다.)
+function computeVolumeStrength(indicator, recentIndicators) {
   const ratio = Number(indicator?.volumeRatio);
   if (!Number.isFinite(ratio)) return 50;
-  return clamp(Math.round(50 + (ratio - 1) * 50), 0, 100);
+  // 거래량 가중치: 평균(1.0)이면 0.2, 2배 이상이면 1.0까지 (대량일수록 방향성을 강하게 반영)
+  const volumeWeight = clamp(ratio - 1, 0, 1) * 0.8 + 0.2;
+  // 가격 방향: 최근 3일 평균 수익률(소수, ±3% 이상이면 포화)
+  const series = Array.isArray(recentIndicators) && recentIndicators.length ? recentIndicators : [indicator];
+  const recentReturns = series.slice(-3).map((d) => Number(d?.returnValue)).filter(Number.isFinite);
+  const avgReturn = recentReturns.length ? average(recentReturns) : 0;
+  const direction = clamp(avgReturn / 0.03, -1, 1);
+  return clamp(Math.round(50 + direction * volumeWeight * 45), 0, 100);
 }
 
 function getKoreaDate(value = new Date()) {
@@ -2152,6 +2168,10 @@ function generateSmartMoneyData(ticker, prices, volume) {
 
   return {
     date: new Date().toISOString().split('T')[0],
+    // 🆕 실제 기관/외국인 수급 데이터가 아니라 가격·거래량으로 '추정'한 값임을 표시한다.
+    //    (네이버 크롤러 실데이터가 저장되면 위 storedData 분기에서 source: 'naver-crawler'로 대체됨)
+    source: "estimated",
+    isEstimated: true,
 
     institution: {
       buy: Math.round(volume.at(-1) * 0.35 * (1 + priceChange * 0.15)),
@@ -2273,21 +2293,23 @@ function calculateSmartMoneyFlow(smartMoneyData) {
   const foreign = smartMoneyData.foreign;
   const shortSell = smartMoneyData.shortSell;
 
-  // 기관 신호
+  // 순매수 비율 → 방향성 신호 (보합은 '중립'으로; 예전엔 보합이 "약한 매도"로 잘못 분류됨)
+  const flowSignal = (r) =>
+    r > 0.05 ? "강한 매수" : r > 0.005 ? "약한 매수" : r < -0.05 ? "강한 매도" : r < -0.005 ? "약한 매도" : "중립";
+
+  // 기관 신호 (순매수 비율을 50 중심 0~100으로 정규화; ±0.08을 포화점으로)
   const instNetRatio = inst.net / (inst.buy + inst.sell || 1);
-  const instSignal = instNetRatio > 0.05 ? "강한 매수" : instNetRatio > 0 ? "약한 매수" :
-                     instNetRatio < -0.05 ? "강한 매도" : "약한 매도";
-  const instScore = Math.abs(instNetRatio) * 100;
+  const instSignal = flowSignal(instNetRatio);
+  const instScore = clamp(50 + (instNetRatio / 0.08) * 50, 0, 100);
 
   // 외국인 신호
   const foreignNetRatio = foreign.net / (foreign.buy + foreign.sell || 1);
-  const foreignSignal = foreignNetRatio > 0.05 ? "강한 매수" : foreignNetRatio > 0 ? "약한 매수" :
-                        foreignNetRatio < -0.05 ? "강한 매도" : "약한 매도";
-  const foreignScore = Math.abs(foreignNetRatio) * 100;
+  const foreignSignal = flowSignal(foreignNetRatio);
+  const foreignScore = clamp(50 + (foreignNetRatio / 0.08) * 50, 0, 100);
 
-  // 공매도 위험도
+  // 공매도 위험도 (높을수록 약세 → 감점)
   const shortSignal = shortSell.ratio > 0.025 ? "매우 높음" : shortSell.ratio > 0.015 ? "높음" : "보통";
-  const shortScore = shortSell.ratio * 2000;
+  const shortPenalty = clamp((shortSell.ratio - 0.015) / 0.02, 0, 1) * 10;
 
   // 매물대 분석
   const totalVolume = smartMoneyData.priceLevel.high + smartMoneyData.priceLevel.mid + smartMoneyData.priceLevel.low;
@@ -2297,27 +2319,33 @@ function calculateSmartMoneyFlow(smartMoneyData) {
     lowRatio: smartMoneyData.priceLevel.low / totalVolume
   };
 
-  // 종합 신호
-  const combinedScore = (instScore * 0.35 + foreignScore * 0.35 + shortScore * 0.3) / 10;
+  // 종합 신호: 50(중립) 기준, 기관·외국인 방향으로 ±, 공매도로 감점 (0~100)
+  // (예전 공식은 /10 때문에 항상 ~2점에 갇혀 종합점수를 체계적으로 끌어내렸다.)
+  let combinedScore = (instScore * 0.4 + foreignScore * 0.4 + 50 * 0.2) - shortPenalty;
+  // 추정 데이터는 확신을 낮춰 중립(50) 쪽으로 절반만 반영한다.
+  if (smartMoneyData.isEstimated) combinedScore = 50 + (combinedScore - 50) * 0.5;
+  combinedScore = clamp(combinedScore, 0, 100);
+  const estimateTag = smartMoneyData.isEstimated ? " (추정)" : "";
 
   return {
+    isEstimated: Boolean(smartMoneyData.isEstimated),
     institution: {
       signal: instSignal,
-      score: Math.min(100, instScore),
+      score: Math.round(instScore),
       netRatio: instNetRatio.toFixed(4)
     },
     foreign: {
       signal: foreignSignal,
-      score: Math.min(100, foreignScore),
+      score: Math.round(foreignScore),
       netRatio: foreignNetRatio.toFixed(4)
     },
     shortSell: {
       signal: shortSignal,
-      score: Math.min(100, shortScore),
+      score: Math.round(clamp(shortSell.ratio * 2000, 0, 100)),
       ratio: (shortSell.ratio * 100).toFixed(2)
     },
     volumeDistribution,
-    combinedSignal: combinedScore > 60 ? "⭐⭐⭐ 매수" : combinedScore > 40 ? "⭐⭐ 관찰" : "⭐ 회피",
+    combinedSignal: (combinedScore > 60 ? "⭐⭐⭐ 매수" : combinedScore > 40 ? "⭐⭐ 관찰" : "⭐ 회피") + estimateTag,
     combinedScore: Math.round(combinedScore)
   };
 }
@@ -2604,8 +2632,9 @@ function checkSignalChanges(ticker) {
   // 현재 신호 계산
   const trendScore = calculateTrendScore(indicators);
   const reversionScore = calculateMeanReversionScore(indicators);
-  const volumeScore = computeVolumeStrength(latestIndicator);
-  const smartMoneyScore = calculateSmartMoneyFlow(smartMoneyData).combinedScore;
+  const volumeScore = computeVolumeStrength(latestIndicator, indicators);
+  const smartMoneyFlow = calculateSmartMoneyFlow(smartMoneyData);
+  const smartMoneyScore = smartMoneyFlow.combinedScore;
   const valuationScore = calculateValuationScore(ticker, fundamentals);
 
   const currentSignal = calculateMultiModelSignal(
@@ -2613,7 +2642,8 @@ function checkSignalChanges(ticker) {
     reversionScore,
     volumeScore,
     smartMoneyScore,
-    valuationScore
+    valuationScore,
+    smartMoneyFlow.isEstimated
   );
 
   // 이전 신호와 비교
@@ -3060,7 +3090,7 @@ function calculateValuationScore(ticker, fundamentals) {
 }
 
 // 4. 모델 통합 신호 생성
-function calculateMultiModelSignal(trendScore, reversionScore, volumeScore, smartMoneyScore, valuationScore) {
+function calculateMultiModelSignal(trendScore, reversionScore, volumeScore, smartMoneyScore, valuationScore, smartMoneyEstimated = false) {
   // 가중치 설정
   const weights = {
     trend: 0.30,
@@ -3117,11 +3147,11 @@ function calculateMultiModelSignal(trendScore, reversionScore, volumeScore, smar
     },
     volume: {
       score: Math.round(volumeScore),
-      verdict: volumeScore >= 70 ? "강한 매수" : volumeScore >= 50 ? "약한 매수" : volumeScore >= 30 ? "정상" : "강한 매도"
+      verdict: volumeScore >= 70 ? "대량 매수세" : volumeScore >= 56 ? "매수 우위" : volumeScore > 44 ? "중립" : volumeScore >= 30 ? "매도 우위" : "대량 매도세"
     },
     smartMoney: {
       score: Math.round(smartMoneyScore),
-      verdict: smartMoneyScore >= 70 ? "기관 강한 매수" : smartMoneyScore >= 50 ? "기관 약한 매수" : smartMoneyScore >= 30 ? "관중" : "기관 매도"
+      verdict: (smartMoneyScore >= 70 ? "기관 강한 매수" : smartMoneyScore >= 56 ? "기관 약한 매수" : smartMoneyScore > 44 ? "중립" : smartMoneyScore >= 30 ? "기관 약한 매도" : "기관 강한 매도") + (smartMoneyEstimated ? " (추정)" : "")
     },
     valuation: {
       score: Math.round(valuationScore),
@@ -4051,8 +4081,9 @@ function renderModelsAnalysis() {
   // 각 모델 점수 계산
   const trendScore = calculateTrendScore(indicators);
   const reversionScore = calculateMeanReversionScore(indicators);
-  const volumeScore = computeVolumeStrength(latestIndicator); // 20일 평균 대비 거래량 비율로 환산
-  const smartMoneyScore = calculateSmartMoneyFlow(smartMoneyData).combinedScore;
+  const volumeScore = computeVolumeStrength(latestIndicator, indicators); // 거래량 크기 + 가격 방향 반영
+  const smartMoneyFlow = calculateSmartMoneyFlow(smartMoneyData);
+  const smartMoneyScore = smartMoneyFlow.combinedScore;
   const valuationScore = calculateValuationScore(ticker, fundamentals);
 
   // 통합 신호 생성
@@ -4061,7 +4092,8 @@ function renderModelsAnalysis() {
     reversionScore,
     volumeScore,
     smartMoneyScore,
-    valuationScore
+    valuationScore,
+    smartMoneyFlow.isEstimated
   );
 
   // UI 업데이트
@@ -5336,16 +5368,20 @@ async function fetchRemoteSymbolResults(query, market) {
   // 🆕 로컬/오프라인 환경 대비: 정적 카탈로그(symbols.json)를 1회 로드해 둔다.
   //    (예전에는 localhost면 무조건 [] 를 반환해 해외 종목 검색이 막혔다.)
   ensureStaticSymbolCatalog();
+  if (apiSearchBackendMissing) return []; // 백엔드 없음 확인됨 → 키 입력마다 404 호출하지 않음
   try {
     // localhost라도 백엔드(vercel dev 등)가 있으면 원격 검색을 그대로 사용한다.
-    // 백엔드가 없는 정적 호스팅(python -m http.server 등)에서는 404가 즉시 떨어져
-    // catch로 빠지므로 추가 지연 없이 빈 배열로 폴백된다.
+    // 백엔드가 없는 정적 호스팅(python -m http.server 등)이면 404가 떨어지고,
+    // 아래에서 플래그를 세워 이후 호출을 멈춘다(정적 카탈로그 + 직접입력 폴백으로 대응).
     const response = await fetchApi(`/api/symbol-search?q=${encodeURIComponent(query)}&market=${encodeURIComponent(market)}`, { cache: "no-store" });
-    if (!response.ok) return [];
+    if (!response.ok) {
+      if (response.status === 404) apiSearchBackendMissing = true;
+      return [];
+    }
     const payload = await response.json();
     return Array.isArray(payload.results) ? payload.results : [];
   } catch {
-    // 서버리스 백엔드가 없는 환경: 원격 결과 없이 진행(정적 카탈로그 + 직접입력 폴백으로 대응).
+    // 네트워크/JSON 일시 오류는 폴백만 하고 플래그는 세우지 않는다(배포 환경에서 일시 오류 가능).
     return [];
   }
 }
@@ -6524,28 +6560,15 @@ Promise.all([
   setInterval(() => fetchMarketIndices().catch(() => {}), 120000);
 });
 
-// 4단계: 신호기 초기화 (더 빠르고 적극적으로)
-setTimeout(async () => {
+// 4단계: 신호기 초기화 — 자동 스캔 대신 안내만 표시
+// (코스닥/나스닥 100종목 분석은 부담이 크므로 '분석 시작' 클릭 시에만 실행한다)
+setTimeout(() => {
   try {
-    // enhancedSignalScanner 확인
-    if (!enhancedSignalScanner) {
-      console.warn("⚠️ enhancedSignalScanner가 초기화되지 않았습니다");
-      return;
-    }
-
-    console.log("🔄 신호기 초기 스캔 시작...");
-
-    // scanAndRenderSignals 실행
-    if (typeof scanAndRenderSignals === 'function') {
-      await scanAndRenderSignals();
-      console.log("✅ 신호기 초기 스캔 완료");
-    } else {
-      console.warn("⚠️ scanAndRenderSignals 함수를 찾을 수 없습니다");
-    }
+    if (typeof renderSignalTable === "function") renderSignalTable();
   } catch (error) {
-    console.error("❌ 신호기 스캔 오류:", error);
+    console.error("신호기 초기화 오류:", error);
   }
-}, 1000); // 1초로 단축
+}, 800);
 
 // ═══════════════════════════════════════════════════════════════
 // 🚀 종목신호기 (Signal Scanner)
@@ -6560,115 +6583,202 @@ const signalElements = {
   danteCount: document.getElementById("danteSignalCount"),
   swingCount: document.getElementById("swingSignalCount"),
   foreignCount: document.getElementById("foreignSignalCount"),
+  marketTabs: document.getElementById("signalMarketTabs"),
+  progress: document.getElementById("signalProgress"),
+  progressBar: document.getElementById("signalProgressBar"),
+  progressText: document.getElementById("signalProgressText"),
+  progressLabel: document.getElementById("signalProgressLabel"),
+  resultModal: document.getElementById("signalResultModal"),
+  resultTitle: document.getElementById("signalResultTitle"),
+  resultSubtitle: document.getElementById("signalResultSubtitle"),
+  resultBody: document.getElementById("signalResultBody"),
+  resultClose: document.getElementById("signalResultClose"),
+  resultConfirm: document.getElementById("signalResultConfirm"),
 };
+
+// 🆕 신호기 시장 상태(국내/해외)와 시장별 결과 저장
+let signalMarket = "domestic";
+const signalResultsByMarket = { domestic: [], global: [] };
+const signalUniverseCache = { domestic: null, global: null };
+
+// 🆕 /api/universe 미사용(정적 호스팅 등) 시 내장 폴백 목록
+const SIGNAL_FALLBACK_KOSDAQ = [
+  ["247540", "에코프로비엠"], ["086520", "에코프로"], ["196170", "알테오젠"], ["028300", "HLB"],
+  ["348370", "엔켐"], ["058470", "리노공업"], ["068760", "셀트리온제약"], ["214150", "클래시스"],
+  ["277810", "레인보우로보틱스"], ["263750", "펄어비스"], ["035900", "JYP Ent."], ["041510", "에스엠"],
+  ["141080", "리가켐바이오"], ["145020", "휴젤"], ["357780", "솔브레인"], ["240810", "원익IPS"],
+  ["005290", "동진쎄미켐"], ["039030", "이오테크닉스"], ["036930", "주성엔지니어링"], ["293490", "카카오게임즈"],
+  ["112040", "위메이드"], ["087010", "펩트론"], ["257720", "실리콘투"], ["214450", "파마리서치"],
+  ["403870", "HPSP"], ["089030", "테크윙"], ["095340", "ISC"], ["086900", "메디톡스"],
+  ["195940", "HK이노엔"], ["328130", "루닛"], ["253450", "스튜디오드래곤"], ["122870", "와이지엔터테인먼트"],
+].map(([code, name]) => ({ ticker: `${code}.KQ`, name }));
+
+const SIGNAL_FALLBACK_NASDAQ = [
+  ["AAPL", "Apple"], ["MSFT", "Microsoft"], ["NVDA", "NVIDIA"], ["AMZN", "Amazon"], ["AVGO", "Broadcom"],
+  ["META", "Meta Platforms"], ["TSLA", "Tesla"], ["GOOGL", "Alphabet A"], ["COST", "Costco"], ["NFLX", "Netflix"],
+  ["AMD", "AMD"], ["ADBE", "Adobe"], ["QCOM", "Qualcomm"], ["TXN", "Texas Instruments"], ["AMAT", "Applied Materials"],
+  ["INTU", "Intuit"], ["ISRG", "Intuitive Surgical"], ["BKNG", "Booking"], ["MU", "Micron"], ["LRCX", "Lam Research"],
+  ["PANW", "Palo Alto Networks"], ["KLAC", "KLA"], ["SNPS", "Synopsys"], ["CDNS", "Cadence"], ["CRWD", "CrowdStrike"],
+  ["ASML", "ASML"], ["MRVL", "Marvell"], ["ARM", "Arm Holdings"], ["DDOG", "Datadog"], ["ON", "ON Semiconductor"],
+].map(([ticker, name]) => ({ ticker, name }));
 
 // 신호기 이벤트 바인딩
 if (signalElements.refreshBtn) {
-  signalElements.refreshBtn.addEventListener("click", async () => {
-    await scanAndRenderSignals();
-  });
+  signalElements.refreshBtn.addEventListener("click", () => runSignalScan(signalMarket));
 }
-
 if (signalElements.filterSelect) {
-  signalElements.filterSelect.addEventListener("change", () => {
-    renderSignalTable();
+  signalElements.filterSelect.addEventListener("change", () => renderSignalTable());
+}
+// 국내/해외 탭 전환
+if (signalElements.marketTabs) {
+  signalElements.marketTabs.querySelectorAll(".signal-market-tab").forEach((tab) => {
+    tab.addEventListener("click", () => switchSignalMarket(tab.dataset.market));
+  });
+}
+// 결과 모달 닫기/확인
+if (signalElements.resultClose) signalElements.resultClose.addEventListener("click", closeSignalResultModal);
+if (signalElements.resultConfirm) signalElements.resultConfirm.addEventListener("click", closeSignalResultModal);
+if (signalElements.resultModal) {
+  signalElements.resultModal.addEventListener("click", (e) => {
+    if (e.target === signalElements.resultModal) closeSignalResultModal();
   });
 }
 
-/**
- * 모든 종목의 신호를 스캔하고 렌더링
- */
-async function scanAndRenderSignals() {
-  console.log("🔍 scanAndRenderSignals() 호출됨");
-  console.log("  - signalElements.refreshBtn:", !!signalElements.refreshBtn);
-  console.log("  - enhancedSignalScanner:", !!enhancedSignalScanner);
-
-  if (!signalElements.refreshBtn || !enhancedSignalScanner) {
-    console.warn("❌ 신호기 초기화 중...", {
-      refreshBtn: !!signalElements.refreshBtn,
-      scanner: !!enhancedSignalScanner
+function switchSignalMarket(market) {
+  if (market !== "domestic" && market !== "global") return;
+  signalMarket = market;
+  if (signalElements.marketTabs) {
+    signalElements.marketTabs.querySelectorAll(".signal-market-tab").forEach((tab) => {
+      const active = tab.dataset.market === market;
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+      tab.style.background = active ? "var(--primary)" : "var(--bg-secondary)";
+      tab.style.color = active ? "#fff" : "var(--text)";
     });
-    return;
   }
+  renderSignalTable();
+  updateSignalStatistics();
+}
 
-  // 이미 실행 중이면 무시
-  if (signalElements.refreshBtn.disabled) {
-    console.warn("⚠️ 신호기 스캔 이미 실행 중");
-    return;
+function closeSignalResultModal() {
+  if (signalElements.resultModal) signalElements.resultModal.hidden = true;
+}
+
+// 🆕 신호기 유니버스(분석 대상) 가져오기: /api/universe, 실패 시 내장 폴백
+async function getSignalUniverse(market) {
+  if (signalUniverseCache[market]) return signalUniverseCache[market];
+  let list = [];
+  try {
+    const response = await fetchApi(`/api/universe?market=${encodeURIComponent(market)}`, { cache: "no-store" });
+    if (response.ok) {
+      const payload = await response.json();
+      if (Array.isArray(payload.symbols)) list = payload.symbols;
+    }
+  } catch (e) {
+    // 백엔드 없거나 실패 → 내장 폴백 사용
   }
+  if (!list.length) list = market === "global" ? SIGNAL_FALLBACK_NASDAQ : SIGNAL_FALLBACK_KOSDAQ;
+  list = list.filter((s) => s && s.ticker).slice(0, 100);
+  signalUniverseCache[market] = list;
+  return list;
+}
 
-  signalElements.refreshBtn.disabled = true;
-  signalElements.refreshBtn.textContent = "🔄 검색 중...";
+// 동시성 제한 비동기 실행기 (한 번에 limit개씩 처리하며 진행률 콜백)
+async function runWithConcurrency(items, limit, worker, onProgress) {
+  let index = 0, done = 0;
+  const total = items.length;
+  async function next() {
+    while (index < total) {
+      const current = index++;
+      try { await worker(items[current], current); } catch (e) { /* skip */ }
+      done++;
+      if (onProgress) onProgress(done, total);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, total) }, () => next()));
+}
+
+function setSignalProgress(done, total, label) {
+  if (!signalElements.progress) return;
+  signalElements.progress.hidden = false;
+  if (signalElements.progressBar) signalElements.progressBar.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+  if (signalElements.progressText) signalElements.progressText.textContent = `${done} / ${total}`;
+  if (label && signalElements.progressLabel) signalElements.progressLabel.textContent = label;
+}
+
+// 🆕 시장(국내/해외)별 신호 분석 실행
+async function runSignalScan(market) {
+  if (!enhancedSignalScanner) { showToast("신호기 초기화 중입니다", "warning"); return; }
+  if (signalElements.refreshBtn?.disabled) return;
+
+  if (signalElements.refreshBtn) {
+    signalElements.refreshBtn.disabled = true;
+    signalElements.refreshBtn.textContent = "분석 중…";
+  }
+  setSignalProgress(0, 0, "분석 대상 종목을 불러오는 중…");
 
   try {
-    // 모든 알려진 종목 가져오기 (안전하게)
-    let allSymbols = [];
-    try {
-      allSymbols = getKnownSymbols ? getKnownSymbols() : [];
-    } catch (e) {
-      console.warn("getKnownSymbols 호출 실패:", e);
-      allSymbols = Object.keys(samples).map(ticker => ({
-        ticker,
-        name: tickerMeta[ticker] || ticker,
-      }));
-    }
+    const universe = await getSignalUniverse(market);
+    if (!universe.length) { showToast("분석 대상 종목을 불러오지 못했습니다", "warning"); return; }
 
-    console.log(`📋 스캔할 종목 수: ${allSymbols.length}`);
+    // 종목명 등록(표시용)
+    universe.forEach((s) => {
+      try { registerKnownSymbol({ ...s, market: market === "global" ? "global" : "domestic" }); } catch (e) {}
+    });
 
-    if (!allSymbols.length) {
-      console.warn("⚠️ 스캔할 종목이 없습니다");
-      showToast("스캔할 종목이 없습니다", "warning");
-      return;
-    }
-
+    // 각 종목 일봉(종가) 데이터 수집 — 동시성 6, 진행률 표시
+    setSignalProgress(0, universe.length, "일봉 데이터 분석 중…");
     const historyMap = {};
+    await runWithConcurrency(universe, 6, async (symbol) => {
+      try { await fetchPriceHistory(symbol.ticker); } catch (e) { /* 일부 실패 허용 */ }
+      const hist = ohlcvHistory?.[symbol.ticker] || samples?.[symbol.ticker] || [];
+      if (Array.isArray(hist) && hist.length > 0) historyMap[symbol.ticker] = hist;
+    }, (done, total) => setSignalProgress(done, total, "일봉 데이터 분석 중…"));
 
-    // 각 종목의 가격 데이터 수집
-    for (const symbol of allSymbols.slice(0, 50)) {  // 성능상 50개 제한
-      const history = ohlcvHistory?.[symbol.ticker] || samples?.[symbol.ticker] || [];
-      if (history.length > 0) {
-        historyMap[symbol.ticker] = Array.isArray(history) ? history : [];
-      }
-    }
-
-    console.log(`📊 가격 데이터 있는 종목: ${Object.keys(historyMap).length}`);
-
-    if (!Object.keys(historyMap).length) {
-      console.warn("❌ 가격 데이터가 없습니다");
-      showToast("가격 데이터가 없습니다", "warning");
+    const scanTargets = universe.filter((s) => historyMap[s.ticker]);
+    if (!scanTargets.length) {
+      showToast("가격 데이터를 가져오지 못했습니다 (배포 환경에서 실행하세요)", "warning");
       return;
     }
 
-    console.log("🔄 신호 스캔 실행 중...");
+    // 결정론적 신호 스캔 (일 단위 종가 흐름)
+    const results = await enhancedSignalScanner.scanAllSymbols(scanTargets, historyMap);
+    results.sort((a, b) => b.totalScore - a.totalScore);
+    signalResultsByMarket[market] = results;
 
-    // 신호 스캔 실행 (고도화된 신호 엔진)
-    const results = await enhancedSignalScanner.scanAllSymbols(
-      allSymbols.filter(s => historyMap[s.ticker]),
-      historyMap
-    );
-
-    console.log(`✅ 신호 스캔 완료: ${results.length}개 신호 발견`);
-
-    // 성공 메시지
-    if (results.length > 0) {
-      console.log(`📈 발견된 신호들:`, results.map(r => `${r.ticker}(${r.totalScore}점)`).join(", "));
-      showToast(`${results.length}개 신호 발견`, "success");
-    } else {
-      console.log("⚠️ 조건을 만족하는 신호가 없습니다");
-      showToast("조건을 만족하는 신호가 없습니다 (점수 15 이상 필요)", "info");
-    }
-
-    // UI 업데이트
     renderSignalTable();
     updateSignalStatistics();
     updateSignalLastUpdate();
+    showSignalResultModal(market, results, scanTargets.length);
   } catch (error) {
     console.error("신호 스캔 오류:", error);
-    showToast(`신호 스캔 실패: ${error.message}`, "error");
+    showToast(`신호 분석 실패: ${error.message}`, "error");
   } finally {
-    signalElements.refreshBtn.disabled = false;
-    signalElements.refreshBtn.textContent = "🔄 새로고침";
+    if (signalElements.progress) signalElements.progress.hidden = true;
+    if (signalElements.refreshBtn) {
+      signalElements.refreshBtn.disabled = false;
+      signalElements.refreshBtn.textContent = "▶ 분석 시작";
+    }
   }
+}
+
+// 🆕 분석 완료 모달
+function showSignalResultModal(market, results, analyzed) {
+  if (!signalElements.resultModal) return;
+  const marketLabel = market === "global" ? "해외(나스닥 100)" : "국내(코스닥 시총 100)";
+  const top = results.slice(0, 10);
+  if (signalElements.resultTitle) signalElements.resultTitle.textContent = results.length ? "📊 분석 완료" : "분석 완료";
+  if (signalElements.resultSubtitle) {
+    signalElements.resultSubtitle.textContent = `${marketLabel} · ${analyzed}개 종목 분석 · 상승신호 ${results.length}개 (상위 ${top.length} 표시)`;
+  }
+  if (signalElements.resultBody) {
+    signalElements.resultBody.innerHTML = top.length
+      ? `<ol style="margin:0; padding-left:20px; line-height:1.9;">${top.map((r) =>
+          `<li><strong>${r.name || r.ticker}</strong> <span style="color:var(--muted); font-size:0.9em;">${r.ticker}</span>` +
+          ` — 점수 <strong>${r.totalScore}</strong>${r.recommendation ? ` · ${r.recommendation}` : ""}` +
+          `${r.expectedReturn != null ? ` · 예상 ${r.expectedReturn >= 0 ? "+" : ""}${r.expectedReturn}%` : ""}</li>`).join("")}</ol>`
+      : `<p style="color:var(--muted);">상승 조건(점수 15+)을 만족하는 종목이 없습니다.</p>`;
+  }
+  signalElements.resultModal.hidden = false;
 }
 
 /**
@@ -6676,26 +6786,17 @@ async function scanAndRenderSignals() {
  */
 function renderSignalTable() {
   try {
-    if (!enhancedSignalScanner && !signalScanner) {
-      signalElements.tableBody.innerHTML = `
-        <tr style="border-top: 1px solid var(--border);">
-          <td colspan="7" style="padding: 32px; text-align: center; color: var(--muted);">
-            신호기를 초기화 중입니다...
-          </td>
-        </tr>
-      `;
-      return;
-    }
-
-    const scanner = enhancedSignalScanner || signalScanner;
+    if (!signalElements.tableBody) return;
     const filter = signalElements.filterSelect?.value || "all";
-    const signals = scanner.getSignalRanking(filter);
+    const allResults = signalResultsByMarket[signalMarket] || [];
+    let signals = filter === "all" ? allResults : allResults.filter((s) => s.signals?.[filter]?.score > 0);
+    signals = signals.slice(0, 10); // 상위 10개만 표시
 
     if (signals.length === 0) {
       signalElements.tableBody.innerHTML = `
         <tr style="border-top: 1px solid var(--border);">
           <td colspan="7" style="padding: 32px; text-align: center; color: var(--muted);">
-            신호가 없습니다. 새로고침 버튼을 클릭하세요.
+            ${allResults.length ? "필터 조건에 맞는 신호가 없습니다." : "‘▶ 분석 시작’을 눌러 종목을 분석하세요."}
           </td>
         </tr>
       `;
@@ -6786,17 +6887,14 @@ function renderSignalTable() {
  */
 function updateSignalStatistics() {
   try {
-    const scanner = enhancedSignalScanner || signalScanner;
-    if (!scanner) {
-      return;
-    }
-
-    const stats = scanner.getSignalStatistics();
-
-    if (signalElements.totalCount) signalElements.totalCount.textContent = stats.totalCount || 0;
-    if (signalElements.danteCount) signalElements.danteCount.textContent = stats.danteCount || 0;
-    if (signalElements.swingCount) signalElements.swingCount.textContent = stats.swingCount || 0;
-    if (signalElements.foreignCount) signalElements.foreignCount.textContent = stats.foreignCount || 0;
+    const signals = signalResultsByMarket[signalMarket] || [];
+    const danteCount = signals.filter((s) => s.signals?.dante?.score > 0).length;
+    const swingCount = signals.filter((s) => s.signals?.swing?.score > 0).length;
+    const foreignCount = signals.filter((s) => s.signals?.foreign?.score > 0).length;
+    if (signalElements.totalCount) signalElements.totalCount.textContent = signals.length;
+    if (signalElements.danteCount) signalElements.danteCount.textContent = danteCount;
+    if (signalElements.swingCount) signalElements.swingCount.textContent = swingCount;
+    if (signalElements.foreignCount) signalElements.foreignCount.textContent = foreignCount;
   } catch (error) {
     console.error("통계 업데이트 오류:", error);
   }

@@ -1,462 +1,434 @@
 /**
- * 종목신호기 - 상승신호 스캐닝 엔진
+ * 종목신호기 - 상승신호 스캐닝 엔진 (일(日) 단위)
  *
- * 기능:
- * - Dante 신호 (MA Reversal, 256기법, Ichimoku, Box Trading, Breakout)
- * - 스윙 신호 (고점/저점 갱신, 거래량)
- * - 기술지표 신호 (RSI, MACD, OBV, Stochastic)
- * - 외국인/기관 신호
- * - 다중 신호 조합 점수 계산
+ * 설계 원칙:
+ * - 분/시간 단위가 아니라 "일봉" 흐름으로 며칠~1주일 스윙 진입을 판단한다.
+ * - 모든 신호는 가격/거래량 일봉 데이터로 '결정론적으로' 계산한다(난수 사용 금지).
+ *   → 같은 종목을 다시 스캔하면 항상 같은 점수가 나온다.
+ *
+ * 입력 데이터:
+ * - history 는 (1) 일봉 OHLCV 객체 배열 [{open,high,low,close,volume}, ...] 또는
+ *               (2) 종가 숫자 배열 [80800, 81200, ...] 둘 다 허용한다.
+ *   _normalize() 가 두 형태를 종가/고가/저가/거래량 배열로 변환한다.
+ *
+ * 신호 구성(가중치):
+ * - dante(0.25)        : 추세형 패턴 (MA 골든크로스, 256기법, 일목, 박스 돌파)
+ * - swing(0.25)        : 스윙 (3일선, 5일 고점 갱신, 저점 상향, 거래량 증가)
+ * - technical(0.20)    : 기술지표 (RSI, MACD, OBV, Stochastic)
+ * - foreign(0.15)      : 수급 흐름 추정 (상승일/하락일 거래량 비교) — 실제 외국인 데이터 없을 때 추정
+ * - institution(0.15)  : 거래량 누적 추정 (OBV 추세)
  */
 
-// 신호 저장소 (indexedDB 또는 localStorage)
 let signalStorage = {};
-
-/**
- * 신호 객체 구조:
- * {
- *   ticker: "005930.KS",
- *   name: "삼성전자",
- *   currentPrice: 80800,
- *   signals: {
- *     dante: {score: 20, details: ["MA Reversal", "256기법"]},
- *     swing: {score: 15, details: ["고점 갱신", "거래량 증가"]},
- *     technical: {score: 10, details: ["RSI 상승", "MACD+"]},
- *     foreign: {score: 8, details: ["외국인 순매수"]},
- *     institution: {score: 7, details: ["기관 순매수"]},
- *   },
- *   totalScore: 60,
- *   expectedReturn: 4.5,  // %
- *   detectionTime: 1719374400000,  // timestamp
- *   conditions: ["Dante", "Swing", "RSI", "Foreign"],  // 만족 조건들
- * }
- */
 
 class SignalScanner {
   constructor() {
-    this.signals = new Map();  // ticker → signal data
-    this.signalHistory = [];   // 시간별 신호 히스토리
-    this.maxHistoryDays = 7;   // 7일 히스토리 유지
+    this.signals = new Map();   // ticker → signal data
+    this.signalHistory = [];
+    this.maxHistoryDays = 7;
   }
 
-  /**
-   * 종목 신호 스캔
-   */
-  async scanSymbol(ticker, historyData = [], symbolName = "") {
+  // ── 입력 정규화: OHLCV 객체 배열 / 숫자(종가) 배열 → {closes, highs, lows, volumes} ──
+  _normalize(history) {
+    const empty = { closes: [], highs: [], lows: [], volumes: [], hasVolume: false, length: 0 };
+    if (!Array.isArray(history) || history.length === 0) return empty;
+
+    if (typeof history[0] === "number") {
+      const closes = history.filter((v) => Number.isFinite(v));
+      return { closes, highs: closes.slice(), lows: closes.slice(), volumes: [], hasVolume: false, length: closes.length };
+    }
+
+    const closes = [], highs = [], lows = [], volumes = [];
+    for (const row of history) {
+      const c = Number(row?.close);
+      if (!Number.isFinite(c)) continue;
+      closes.push(c);
+      const h = Number(row?.high); highs.push(Number.isFinite(h) ? h : c);
+      const l = Number(row?.low); lows.push(Number.isFinite(l) ? l : c);
+      const v = Number(row?.volume); volumes.push(Number.isFinite(v) ? v : 0);
+    }
+    const hasVolume = volumes.some((v) => v > 0);
+    return { closes, highs, lows, volumes, hasVolume, length: closes.length };
+  }
+
+  // ── 종목 1개 스캔 ──
+  scanSymbol(ticker, historyData = [], symbolName = "") {
+    const { closes, highs, lows, volumes, hasVolume } = this._normalize(historyData);
+
     const signals = {
-      dante: this.detectDanteSignals(ticker, historyData),
-      swing: this.detectSwingSignals(ticker, historyData),
-      technical: this.detectTechnicalSignals(ticker, historyData),
-      foreign: await this.detectForeignSignal(ticker),
-      institution: await this.detectInstitutionSignal(ticker),
+      dante: this.detectDanteSignals(closes),
+      swing: this.detectSwingSignals(closes, volumes, hasVolume),
+      technical: this.detectTechnicalSignals(closes, highs, lows, volumes, hasVolume),
+      foreign: this.detectFlowSignal(closes, volumes, hasVolume),
+      institution: this.detectAccumulationSignal(closes, volumes, hasVolume),
     };
 
     const totalScore = this.calculateTotalScore(signals);
-    const conditions = Object.keys(signals).filter(key => signals[key]?.score > 0);
+    const conditions = Object.keys(signals).filter((key) => signals[key]?.score > 0);
 
     return {
       ticker,
-      name: symbolName || ticker,  // 함수 호출 제거
-      currentPrice: historyData[historyData.length - 1] || 0,
+      name: symbolName || ticker,
+      currentPrice: closes.length ? closes[closes.length - 1] : 0,
       signals,
       totalScore,
-      expectedReturn: this.calculateExpectedReturn(ticker, historyData, signals),
+      expectedReturn: this.calculateExpectedReturn(closes, signals),
       conditions,
       detectionTime: Date.now(),
       confidence: this.calculateConfidence(signals),
     };
   }
 
-  /**
-   * Dante 신호 감지
-   */
-  detectDanteSignals(ticker, history) {
-    if (history.length < 20) return { score: 0, details: [] };
-
+  // ── 1) Dante(추세형) 신호 ──
+  detectDanteSignals(closes) {
+    if (closes.length < 20) return { score: 0, details: [] };
     const details = [];
     let score = 0;
 
-    // 1. MA Reversal (5일선 12일선 역배열)
-    const ma5 = this.calculateMA(history.slice(-5), 5);
-    const ma12 = this.calculateMA(history.slice(-12), 12);
-    if (ma5 > ma12 && history.length > 13) {
-      const prevMa5 = this.calculateMA(history.slice(-6, -1), 5);
-      const prevMa12 = this.calculateMA(history.slice(-13, -1), 12);
-      if (prevMa5 <= prevMa12) {
-        details.push("MA Reversal ↑");
-        score += 7;
-      }
+    // MA 골든크로스 (5일선이 12일선을 상향 돌파)
+    const ma5 = this._ma(closes, 5);
+    const ma12 = this._ma(closes, 12);
+    const prevMa5 = this._ma(closes.slice(0, -1), 5);
+    const prevMa12 = this._ma(closes.slice(0, -1), 12);
+    if (ma5 > ma12 && prevMa5 <= prevMa12) {
+      details.push("MA 골든크로스 ↑");
+      score += 7;
     }
 
-    // 2. 256기법 (3단계: 저점 - 고점 - 저점 패턴)
-    if (history.length >= 20) {
-      const pattern = this.detect256Pattern(history);
-      if (pattern.isValid) {
-        details.push("256기법 활성");
-        score += 5;
-      }
+    // 256기법 (저점 → 고점 → 저점 후 저점 상향)
+    if (this._detect256(closes).isValid) {
+      details.push("256기법 활성");
+      score += 5;
     }
 
-    // 3. Ichimoku 신호
-    if (history.length >= 26) {
-      const ichimoku = this.detectIchimokuSignal(history);
-      if (ichimoku.isBullish) {
-        details.push("Ichimoku ↑");
-        score += 5;
-      }
+    // 일목균형표(단순화: 9일선 > 26일선)
+    if (this._ichimokuBullish(closes)) {
+      details.push("일목 정배열 ↑");
+      score += 5;
     }
 
-    // 4. Box Trading (박스 상단 돌파)
-    const boxSignal = this.detectBoxBreakout(history);
-    if (boxSignal.isBreakout) {
-      details.push("Box Breakout ↑");
+    // 박스권 상향 돌파(직전 10일 고점 대비 +1%)
+    if (this._boxBreakout(closes)) {
+      details.push("박스권 돌파 ↑");
       score += 3;
     }
 
     return { score: Math.min(score, 20), details };
   }
 
-  /**
-   * 스윙 신호 감지 (3일~1주일)
-   */
-  detectSwingSignals(ticker, history) {
-    if (history.length < 7) return { score: 0, details: [] };
-
+  // ── 2) 스윙 신호 (3일~1주) ──
+  detectSwingSignals(closes, volumes, hasVolume) {
+    if (closes.length < 7) return { score: 0, details: [] };
     const details = [];
     let score = 0;
 
-    const last5High = Math.max(...history.slice(-5));
-    const last5Low = Math.min(...history.slice(-5));
-    const last5Avg = history.slice(-5).reduce((a, b) => a + b) / 5;
+    const last5 = closes.slice(-5);
+    const last5High = Math.max(...last5);
+    const last5Low = Math.min(...last5);
+    const current = closes[closes.length - 1];
+    const prev = closes[closes.length - 2];
 
-    const currentPrice = history[history.length - 1];
-    const prevPrice = history[history.length - 2];
-
-    // 1. 3일선 상향 (종가가 3일선 위)
-    const ma3 = this.calculateMA(history.slice(-3), 3);
-    if (currentPrice > ma3) {
-      details.push("3일선 위ᐄ");
+    if (current > this._ma(closes, 3)) {
+      details.push("3일선 위 ↑");
       score += 5;
     }
-
-    // 2. 고점 갱신 (최근 5일 고가 갱신)
-    if (currentPrice >= last5High && prevPrice < last5High) {
-      details.push("고점 갱신🔺");
+    if (current >= last5High && prev < last5High) {
+      details.push("5일 고점 갱신 🔺");
       score += 5;
     }
-
-    // 3. 저점 상향 (저가가 5일 저가보다 높음)
-    if (history[history.length - 1] > last5Low * 1.01) {
-      details.push("저점 상향🔹");
+    if (current > last5Low * 1.01) {
+      details.push("저점 상향 🔹");
       score += 3;
     }
+    // 거래량 증가: 실제 거래량(직전 20일 평균 대비)으로 판단
+    if (hasVolume) {
+      const ratio = this._volumeRatio(volumes, 20);
+      if (ratio > 1.2) {
+        details.push(`거래량 ↑ ${ratio.toFixed(1)}배`);
+        score += 2;
+      }
+    }
 
-    // 4. 거래량 증가 (샘플 데이터이므로 모의 계산)
-    const volumeIncrease = Math.random() > 0.5;
-    if (volumeIncrease) {
-      details.push("거래량↑");
+    return { score: Math.min(score, 20), details };
+  }
+
+  // ── 3) 기술지표 신호 ──
+  detectTechnicalSignals(closes, highs, lows, volumes, hasVolume) {
+    if (closes.length < 15) return { score: 0, details: [] };
+    const details = [];
+    let score = 0;
+
+    // RSI (30~70 구간에서 상승 전환)
+    const rsi = this._rsi(closes);
+    const prevRsi = this._rsi(closes.slice(0, -1));
+    if (rsi > 30 && rsi < 70 && rsi > prevRsi) {
+      details.push(`RSI ↑ ${rsi.toFixed(0)}`);
+      score += 5;
+    }
+
+    // MACD (시그널선 = MACD선의 9일 EMA; 히스토그램 양전환)
+    const macd = this._macd(closes);
+    if (macd.histogram > 0 && macd.prevHistogram <= 0) {
+      details.push("MACD 골든크로스");
+      score += 5;
+    } else if (macd.histogram > 0) {
+      details.push("MACD 양(+)");
       score += 2;
     }
 
-    return { score: Math.min(score, 20), details };
-  }
-
-  /**
-   * 기술지표 신호 감지
-   */
-  detectTechnicalSignals(ticker, history) {
-    if (history.length < 14) return { score: 0, details: [] };
-
-    const details = [];
-    let score = 0;
-
-    // 1. RSI (상승 중, 30~50)
-    const rsi = this.calculateRSI(history);
-    if (rsi > 30 && rsi < 70) {
-      if (history.length > 14) {
-        const prevRsi = this.calculateRSI(history.slice(0, -1));
-        if (rsi > prevRsi) {
-          details.push(`RSI ↑${rsi.toFixed(0)}`);
-          score += 5;
-        }
-      }
-    }
-
-    // 2. MACD (포지티브 크로스)
-    const macd = this.calculateMACD(history);
-    if (macd.histogram > 0) {
-      if (history.length > 26) {
-        const prevMacd = this.calculateMACD(history.slice(0, -1));
-        if (prevMacd.histogram <= 0) {
-          details.push("MACD ×");
-          score += 5;
-        }
-      }
-    }
-
-    // 3. OBV (증가 추세)
-    if (history.length > 5) {
-      const obv = this.calculateOBV(history);
-      const prevObv = this.calculateOBV(history.slice(0, -1));
-      if (obv > prevObv) {
-        details.push("OBV ↑");
+    // OBV (실제 거래량 기반, 5일 전 대비 상승)
+    if (hasVolume) {
+      const obv = this._obv(closes, volumes);
+      if (obv.length > 6 && obv[obv.length - 1] > obv[obv.length - 6]) {
+        details.push("OBV 상승");
         score += 4;
       }
     }
 
-    // 4. Stochastic (저점 턴)
-    const stoch = this.calculateStochastic(history);
+    // Stochastic (%K가 20 위 + K>D)
+    const stoch = this._stochastic(closes, highs, lows);
     if (stoch.k > 20 && stoch.k > stoch.d) {
-      details.push(`K>D`);
+      details.push("스토캐스틱 K>D");
       score += 3;
     }
 
     return { score: Math.min(score, 20), details };
   }
 
-  /**
-   * 외국인 순매수 신호
-   */
-  async detectForeignSignal(ticker) {
-    // 실제 데이터: KRX, 한국투자 API 등에서 조회
-    // 샘플: 70% 확률로 순매수 상태 시뮬레이션
-    const isBuying = Math.random() > 0.3;
-    const score = isBuying ? 15 : 0;
-
-    return {
-      score,
-      details: isBuying ? ["외국인 순매수"] : [],
-      volume: isBuying ? Math.floor(Math.random() * 5000000) : 0,
-    };
+  // ── 4) 수급 흐름 추정 (key: foreign) ──
+  // 실제 외국인 수급 데이터가 없으므로, 상승일/하락일 거래량을 비교해 매수/매도 우위를 추정한다.
+  detectFlowSignal(closes, volumes, hasVolume) {
+    if (!hasVolume || closes.length < 6) {
+      return { score: 0, details: hasVolume ? [] : ["수급 데이터 없음"] };
+    }
+    const flow = this._volumeFlow(closes, volumes, 10); // -1(매도우위) ~ +1(매수우위)
+    const details = [];
+    let score = 0;
+    if (flow > 0.25) { score = 15; details.push("매수 우위 수급(추정)"); }
+    else if (flow > 0.08) { score = 8; details.push("약한 매수 수급(추정)"); }
+    else if (flow < -0.25) { score = 0; details.push("매도 우위 수급(추정)"); }
+    return { score, details, flow: Number(flow.toFixed(2)) };
   }
 
-  /**
-   * 기관 순매수 신호
-   */
-  async detectInstitutionSignal(ticker) {
-    // 샘플: 60% 확률로 순매수
-    const isBuying = Math.random() > 0.4;
-    const score = isBuying ? 15 : 0;
-
-    return {
-      score,
-      details: isBuying ? ["기관 순매수"] : [],
-      volume: isBuying ? Math.floor(Math.random() * 3000000) : 0,
-    };
+  // ── 5) 거래량 누적 추정 (key: institution) ──
+  // OBV 추세로 거래량이 점진적으로 쌓이는지(매집)를 추정한다.
+  detectAccumulationSignal(closes, volumes, hasVolume) {
+    if (!hasVolume || closes.length < 11) {
+      return { score: 0, details: hasVolume ? [] : ["수급 데이터 없음"] };
+    }
+    const obv = this._obv(closes, volumes);
+    const recent = obv[obv.length - 1];
+    const past = obv[obv.length - 11];
+    const details = [];
+    let score = 0;
+    if (recent > past) {
+      const slope = (recent - past) / (Math.abs(past) || 1);
+      if (slope > 0.05) { score = 15; details.push("거래량 누적 증가(추정)"); }
+      else { score = 8; details.push("거래량 완만 누적(추정)"); }
+    }
+    return { score, details };
   }
 
-  /**
-   * 다중 신호 점수 계산 (가중 합산)
-   */
+  // ── 종합 점수(가중 합산) ──
   calculateTotalScore(signals) {
-    const weights = {
-      dante: 0.25,
-      swing: 0.25,
-      technical: 0.20,
-      foreign: 0.15,
-      institution: 0.15,
-    };
-
+    const weights = { dante: 0.25, swing: 0.25, technical: 0.20, foreign: 0.15, institution: 0.15 };
     let total = 0;
     for (const [key, signal] of Object.entries(signals)) {
       total += (signal?.score || 0) * (weights[key] || 0);
     }
-
     return Math.round(total);
   }
 
-  /**
-   * 신뢰도 계산
-   */
+  // ── 신뢰도(만족 조건 수 기준) ──
   calculateConfidence(signals) {
-    const satisfiedConditions = Object.values(signals).filter(s => s?.score > 0).length;
-    // 5가지 조건 중 만족 개수로 신뢰도 계산
-    return Math.round((satisfiedConditions / 5) * 100);
+    const keys = ["dante", "swing", "technical", "foreign", "institution"];
+    const satisfied = keys.filter((k) => signals[k]?.score > 0).length;
+    return Math.round((satisfied / keys.length) * 100);
   }
 
-  /**
-   * 예상 상승률 계산
-   */
-  calculateExpectedReturn(ticker, history, signals) {
-    if (history.length < 5) return 0;
-
-    const currentPrice = history[history.length - 1];
-    const high5Days = Math.max(...history.slice(-5));
-    const avg20Days = history.slice(-20).reduce((a, b) => a + b) / Math.min(20, history.length);
-
-    // 목표가 = max(최근 5일 고가, 20일 평균 × 1.03)
-    const targetPrice = Math.max(high5Days * 1.02, avg20Days * 1.03);
-    const expectedReturn = ((targetPrice - currentPrice) / currentPrice) * 100;
-
-    // 신호 강도에 따른 가중치 적용
-    const signalStrength = this.calculateTotalScore(signals) / 100;
-    return Math.round(expectedReturn * (0.8 + signalStrength * 0.4) * 10) / 10;
+  // ── 예상 상승률(일봉 기준 목표가) ──
+  calculateExpectedReturn(closes, signals) {
+    if (closes.length < 5) return 0;
+    const current = closes[closes.length - 1];
+    const high5 = Math.max(...closes.slice(-5));
+    const avg20 = this._avg(closes.slice(-20));
+    const target = Math.max(high5 * 1.02, avg20 * 1.03);
+    const expectedReturn = ((target - current) / current) * 100;
+    const strength = this.calculateTotalScore(signals) / 100;
+    const value = expectedReturn * (0.8 + strength * 0.4);
+    return Number.isFinite(value) ? Math.round(value * 10) / 10 : 0;
   }
 
-  /**
-   * 보조 계산 함수들
-   */
-  calculateMA(prices, period) {
-    const slice = prices.slice(-period);
-    return slice.length === period ? slice.reduce((a, b) => a + b) / period : 0;
+  // ───────────────────────── 보조 계산 ─────────────────────────
+  _avg(arr) {
+    return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
   }
 
-  calculateRSI(prices, period = 14) {
-    if (prices.length < period + 1) return 50;
-    const changes = [];
-    for (let i = prices.length - period; i < prices.length; i++) {
-      changes.push(prices[i] - prices[i - 1]);
+  _ma(arr, period) {
+    if (arr.length < period) return 0;
+    const s = arr.slice(-period);
+    return s.reduce((a, b) => a + b, 0) / period;
+  }
+
+  _rsi(closes, period = 14) {
+    if (closes.length < period + 1) return 50;
+    let gain = 0, loss = 0;
+    for (let i = closes.length - period; i < closes.length; i++) {
+      const diff = closes[i] - closes[i - 1];
+      if (diff > 0) gain += diff;
+      else loss += Math.abs(diff);
     }
-    const gains = changes.filter(c => c > 0).reduce((a, b) => a + b, 0) / period;
-    const losses = Math.abs(changes.filter(c => c < 0).reduce((a, b) => a + b, 0)) / period;
-    const rs = losses === 0 ? 100 : gains / losses;
+    const avgGain = gain / period;
+    const avgLoss = loss / period;
+    if (avgLoss === 0) return avgGain === 0 ? 50 : 100;
+    const rs = avgGain / avgLoss;
     return 100 - 100 / (1 + rs);
   }
 
-  calculateMACD(prices) {
-    const ema12 = this.calculateEMA(prices, 12);
-    const ema26 = this.calculateEMA(prices, 26);
-    const macd = ema12 - ema26;
-    const signal = this.calculateEMA(prices, 9);
-    return {
-      macd,
-      signal,
-      histogram: macd - signal,
-    };
-  }
-
-  calculateEMA(prices, period) {
+  _emaSeries(values, period) {
+    if (!values.length) return [];
     const k = 2 / (period + 1);
-    let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    for (let i = period; i < prices.length; i++) {
-      ema = prices[i] * k + ema * (1 - k);
+    const out = [values[0]];
+    for (let i = 1; i < values.length; i++) {
+      out.push(values[i] * k + out[i - 1] * (1 - k));
     }
-    return ema;
+    return out;
   }
 
-  calculateOBV(prices) {
-    // 샘플 구현: 단순 거래량 증가 추적
-    return prices.length > 0 ? prices.reduce((a, b) => a + b, 0) : 0;
+  // MACD: 시그널선은 'MACD선의 9일 EMA' (예전엔 가격의 EMA를 써서 항상 음수였음)
+  _macd(closes) {
+    const ema12 = this._emaSeries(closes, 12);
+    const ema26 = this._emaSeries(closes, 26);
+    const macdLine = ema12.map((v, i) => v - ema26[i]);
+    const signalLine = this._emaSeries(macdLine, 9);
+    const n = closes.length - 1;
+    const macd = macdLine[n] ?? 0;
+    const signal = signalLine[n] ?? 0;
+    const histogram = macd - signal;
+    const prevHistogram = n > 0 ? (macdLine[n - 1] ?? 0) - (signalLine[n - 1] ?? 0) : 0;
+    return { macd, signal, histogram, prevHistogram };
   }
 
-  calculateStochastic(prices, period = 14) {
-    if (prices.length < period) return { k: 50, d: 50 };
-    const high = Math.max(...prices.slice(-period));
-    const low = Math.min(...prices.slice(-period));
-    const close = prices[prices.length - 1];
-    const k = ((close - low) / (high - low)) * 100 || 50;
-    return { k, d: k };  // 단순화
+  // OBV: 실제 거래량 사용 (상승일 +거래량, 하락일 -거래량)
+  _obv(closes, volumes) {
+    const out = [];
+    let obv = 0;
+    for (let i = 0; i < closes.length; i++) {
+      if (i > 0) {
+        const v = volumes[i] || 0;
+        if (closes[i] > closes[i - 1]) obv += v;
+        else if (closes[i] < closes[i - 1]) obv -= v;
+      }
+      out.push(obv);
+    }
+    return out;
   }
 
-  detect256Pattern(history) {
-    // 256기법: 저점 → 고점 → 저점 패턴 감지
-    if (history.length < 20) return { isValid: false };
-
-    const recent = history.slice(-20);
-    const low1Idx = recent.indexOf(Math.min(...recent.slice(0, 10)));
-    const high1Idx = recent.indexOf(Math.max(...recent.slice(low1Idx, 15)));
-    const low2Idx = recent.indexOf(Math.min(...recent.slice(high1Idx)));
-
-    return {
-      isValid: low1Idx < high1Idx && high1Idx < low2Idx &&
-               recent[low2Idx] > recent[low1Idx] * 0.95,
-    };
+  // Stochastic: 고가/저가 기반 %K, %D=최근 3개 %K 평균
+  _stochastic(closes, highs, lows, period = 14) {
+    const n = closes.length;
+    if (n < period) return { k: 50, d: 50 };
+    const kSeries = [];
+    for (let i = period - 1; i < n; i++) {
+      const hi = Math.max(...highs.slice(i - period + 1, i + 1));
+      const lo = Math.min(...lows.slice(i - period + 1, i + 1));
+      kSeries.push(hi === lo ? 50 : ((closes[i] - lo) / (hi - lo)) * 100);
+    }
+    const k = kSeries[kSeries.length - 1];
+    const d = this._avg(kSeries.slice(-3));
+    return { k, d };
   }
 
-  detectIchimokuSignal(history) {
-    // Ichimoku: 단순화된 버전 (9일선 > 26일선)
-    if (history.length < 26) return { isBullish: false };
-
-    const short = this.calculateMA(history.slice(-9), 9);
-    const long = this.calculateMA(history.slice(-26), 26);
-
-    return { isBullish: short > long };
+  _detect256(closes) {
+    if (closes.length < 20) return { isValid: false };
+    const r = closes.slice(-20);
+    let low1 = Infinity, low1i = 0;
+    for (let i = 0; i < 10; i++) if (r[i] < low1) { low1 = r[i]; low1i = i; }
+    let high1 = -Infinity, high1i = low1i;
+    for (let i = low1i; i < 15; i++) if (r[i] > high1) { high1 = r[i]; high1i = i; }
+    let low2 = Infinity, low2i = high1i;
+    for (let i = high1i; i < r.length; i++) if (r[i] < low2) { low2 = r[i]; low2i = i; }
+    return { isValid: low1i < high1i && high1i < low2i && low2 > low1 * 0.95 };
   }
 
-  detectBoxBreakout(history) {
-    // Box Trading: 일정 기간 박스 범위 결정, 상단 돌파 확인
-    if (history.length < 10) return { isBreakout: false };
-
-    const boxHigh = Math.max(...history.slice(-10));
-    const boxLow = Math.min(...history.slice(-10));
-    const current = history[history.length - 1];
-
-    return {
-      isBreakout: current > boxHigh * 1.01,
-    };
+  _ichimokuBullish(closes) {
+    if (closes.length < 26) return false;
+    return this._ma(closes, 9) > this._ma(closes, 26);
   }
 
-  /**
-   * 모든 종목 스캔
-   */
+  // 박스 돌파: 현재가를 제외한 직전 10일 고점 대비 +1% 돌파
+  _boxBreakout(closes) {
+    if (closes.length < 11) return false;
+    const prior = closes.slice(-11, -1);
+    const boxHigh = Math.max(...prior);
+    return closes[closes.length - 1] > boxHigh * 1.01;
+  }
+
+  // 거래량 비율: 현재일 거래량 / 직전 period일 평균(현재 제외)
+  _volumeRatio(volumes, period = 20) {
+    if (!volumes.length) return 1;
+    const last = volumes[volumes.length - 1];
+    const window = volumes.slice(-period - 1, -1);
+    const avg = this._avg(window);
+    return avg > 0 ? last / avg : 1;
+  }
+
+  // 수급 흐름: 최근 period일 동안 상승일 거래량 vs 하락일 거래량 (-1 ~ +1)
+  _volumeFlow(closes, volumes, period = 10) {
+    let up = 0, down = 0;
+    const start = Math.max(1, closes.length - period);
+    for (let i = start; i < closes.length; i++) {
+      const v = volumes[i] || 0;
+      if (closes[i] > closes[i - 1]) up += v;
+      else if (closes[i] < closes[i - 1]) down += v;
+    }
+    const tot = up + down;
+    return tot > 0 ? (up - down) / tot : 0;
+  }
+
+  // ── 전체 종목 스캔 ──
   async scanAllSymbols(symbolList, historyMap) {
     const results = [];
-
     for (const symbol of symbolList) {
       const history = historyMap[symbol.ticker] || [];
-      if (history.length === 0) continue;  // 데이터 없으면 스킵
-
+      if (!Array.isArray(history) || history.length === 0) continue;
       const signal = await this.scanSymbol(symbol.ticker, history, symbol.name);
-
-      // 디버그 로그
-      console.log(`📊 ${symbol.ticker}: 점수=${signal.totalScore}`);
-
-      if (signal.totalScore >= 15) {  // 점수 15 이상으로 대폭 낮춤 (더 많은 신호 표시)
-        results.push(signal);
-      }
+      if (signal.totalScore >= 15) results.push(signal);
     }
-
-    // 순위 정렬
     results.sort((a, b) => b.totalScore - a.totalScore);
-
-    // 저장
-    results.forEach(signal => {
-      this.signals.set(signal.ticker, signal);
-    });
-
+    results.forEach((signal) => this.signals.set(signal.ticker, signal));
+    console.log(`📊 신호 스캔: ${symbolList.length}개 중 ${results.length}개 신호(점수 15+)`);
     return results;
   }
 
-  /**
-   * 신호 순위 조회
-   */
-  getSignalRanking(filter = 'all') {
-    const signals = Array.from(this.signals.values())
-      .sort((a, b) => b.totalScore - a.totalScore);
-
-    if (filter === 'all') return signals;
-
-    return signals.filter(signal => {
+  // ── 신호 순위 조회 ──
+  getSignalRanking(filter = "all") {
+    const signals = Array.from(this.signals.values()).sort((a, b) => b.totalScore - a.totalScore);
+    if (filter === "all") return signals;
+    return signals.filter((signal) => {
       switch (filter) {
-        case 'dante':
-          return signal.signals.dante?.score > 0;
-        case 'swing':
-          return signal.signals.swing?.score > 0;
-        case 'technical':
-          return signal.signals.technical?.score > 0;
-        case 'foreign':
-          return signal.signals.foreign?.score > 0;
-        default:
-          return true;
+        case "dante": return signal.signals.dante?.score > 0;
+        case "swing": return signal.signals.swing?.score > 0;
+        case "technical": return signal.signals.technical?.score > 0;
+        case "foreign": return signal.signals.foreign?.score > 0;
+        default: return true;
       }
     });
   }
 
-  /**
-   * 신호 통계
-   */
+  // ── 신호 통계 ──
   getSignalStatistics() {
     const signals = Array.from(this.signals.values());
-
+    const count = signals.length;
     return {
-      totalCount: signals.length,
-      danteCount: signals.filter(s => s.signals.dante?.score > 0).length,
-      swingCount: signals.filter(s => s.signals.swing?.score > 0).length,
-      technicalCount: signals.filter(s => s.signals.technical?.score > 0).length,
-      foreignCount: signals.filter(s => s.signals.foreign?.score > 0).length,
-      institutionCount: signals.filter(s => s.signals.institution?.score > 0).length,
-      avgScore: Math.round(signals.reduce((a, b) => a + b.totalScore, 0) / signals.length || 0),
-      avgReturn: Math.round(signals.reduce((a, b) => a + b.expectedReturn, 0) / signals.length * 10) / 10,
+      totalCount: count,
+      danteCount: signals.filter((s) => s.signals.dante?.score > 0).length,
+      swingCount: signals.filter((s) => s.signals.swing?.score > 0).length,
+      technicalCount: signals.filter((s) => s.signals.technical?.score > 0).length,
+      foreignCount: signals.filter((s) => s.signals.foreign?.score > 0).length,
+      institutionCount: signals.filter((s) => s.signals.institution?.score > 0).length,
+      avgScore: count ? Math.round(signals.reduce((a, b) => a + b.totalScore, 0) / count) : 0,
+      avgReturn: count ? Math.round((signals.reduce((a, b) => a + b.expectedReturn, 0) / count) * 10) / 10 : 0,
     };
   }
 }

@@ -1420,27 +1420,52 @@
             <div>
               <p class="eyebrow">Stock Signal Scanner</p>
               <h2>종목신호기</h2>
-              <p style="margin: 4px 0 0; opacity: 0.7; font-size: 0.9em;">상승조건을 만족하는 종목을 3일~1주일 주기로 감시하고 순위를 제공합니다.</p>
+              <p style="margin: 4px 0 0; opacity: 0.7; font-size: 0.9em;">일(日) 단위 종가 흐름으로 상승조건을 분석해 상위 10개 종목을 순위로 제공합니다.</p>
             </div>
             <div style="display: flex; gap: 8px;">
               <button id="signalRefreshBtn" type="button" style="padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">
-                🔄 새로고침
+                ▶ 분석 시작
               </button>
               <select id="signalFilterSelect" style="padding: 8px 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-secondary); cursor: pointer;">
                 <option value="all">모든 신호</option>
                 <option value="dante">단테 신호</option>
                 <option value="swing">스윙 신호</option>
                 <option value="technical">기술지표</option>
-                <option value="foreign">외국인 매수</option>
+                <option value="foreign">수급 신호</option>
               </select>
             </div>
           </div>
+
+          <!-- 🆕 국내 / 해외 신호기 탭 -->
+          <div id="signalMarketTabs" role="tablist" style="display: flex; gap: 8px; margin: 8px 0 16px;">
+            <button type="button" class="signal-market-tab" data-market="domestic" role="tab" aria-selected="true"
+              style="padding: 10px 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--primary); color: #fff; cursor: pointer; font-weight: 600;">
+              🇰🇷 국내신호기 <span style="opacity:.8; font-weight:400; font-size:.85em;">코스닥 시총 100</span>
+            </button>
+            <button type="button" class="signal-market-tab" data-market="global" role="tab" aria-selected="false"
+              style="padding: 10px 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-secondary); color: var(--text); cursor: pointer; font-weight: 600;">
+              🇺🇸 해외신호기 <span style="opacity:.7; font-weight:400; font-size:.85em;">나스닥 100</span>
+            </button>
+          </div>
+
+          <!-- 🆕 분석중 진행 표시 -->
+          <div id="signalProgress" hidden style="margin: 0 0 16px; padding: 16px; background: var(--bg-secondary); border-radius: 10px;">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+              <span style="width:18px; height:18px; border:3px solid var(--border); border-top-color: var(--primary); border-radius:50%; display:inline-block; animation: signalspin 0.8s linear infinite;"></span>
+              <strong id="signalProgressLabel">분석 중입니다…</strong>
+              <span id="signalProgressText" style="margin-left:auto; color: var(--muted); font-size:0.9em;">0 / 0</span>
+            </div>
+            <div style="height:8px; background: var(--border); border-radius:6px; overflow:hidden;">
+              <div id="signalProgressBar" style="height:100%; width:0%; background: var(--primary); transition: width .2s ease;"></div>
+            </div>
+          </div>
+          <style>@keyframes signalspin { to { transform: rotate(360deg); } }</style>
 
           <article class="tool-panel">
             <div class="panel-heading compact">
               <div>
                 <p class="eyebrow">Ranking</p>
-                <h2>상승신호 종목 순위</h2>
+                <h2>상승신호 종목 순위 <span style="font-size:0.7em; color: var(--muted);">상위 10</span></h2>
               </div>
               <div style="font-size: 0.9em; color: var(--muted);">마지막 업데이트: <span id="signalLastUpdate">-</span></div>
             </div>
@@ -1497,6 +1522,25 @@
           </article>
         </section>
       </main>
+    </div>
+
+    <!-- 🆕 종목신호기 분석 완료 결과 모달 -->
+    <div class="modal-backdrop" id="signalResultModal" hidden style="position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; z-index:9998; padding:16px;">
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="signalResultTitle" style="background: var(--bg, #111); color: var(--text, #eee); border-radius:14px; max-width:520px; width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.4); overflow:hidden;">
+        <div style="padding:20px 24px; border-bottom:1px solid var(--border);">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+            <h2 id="signalResultTitle" style="margin:0; font-size:1.25em;">분석 완료</h2>
+            <button type="button" id="signalResultClose" aria-label="닫기"
+              style="background:none; border:none; color: var(--muted); font-size:1.4em; cursor:pointer; line-height:1;">✕</button>
+          </div>
+          <p id="signalResultSubtitle" style="margin:6px 0 0; color: var(--muted); font-size:0.9em;"></p>
+        </div>
+        <div id="signalResultBody" style="padding:16px 24px; max-height:50vh; overflow-y:auto;"></div>
+        <div style="padding:16px 24px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px;">
+          <button type="button" id="signalResultConfirm"
+            style="padding:10px 20px; background: var(--primary); color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:600;">결과 보기</button>
+        </div>
+      </section>
     </div>
 
     <div class="modal-backdrop" id="symbolModal" hidden>
