@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# 의존성
+node_modules/
+
+# Vercel
+.vercel/
+
+# 로그 / 임시
+*.log
