@@ -1307,6 +1307,11 @@ function selectTicker(ticker) {
   elements.ticker.value = ticker;
   console.log(`✅ elements.ticker.value 설정됨: ${elements.ticker.value}`);
 
+  // 🆕 대시보드 뷰로 전환
+  document.body.dataset.activeView = "dashboard";
+  document.body.classList.remove("mobile-nav-open");
+  elements.mobileMenu.setAttribute("aria-expanded", "false");
+
   // render() 호출 - 이것이 화면을 업데이트합니다
   console.log(`🎨 render() 호출 시작`);
   render();
@@ -6223,8 +6228,11 @@ document.querySelectorAll("select, input").forEach((control) => {
 
       if (currentTicker && currentTicker !== newTicker) {
         console.log(`📊 종목 변경: ${currentTicker} → ${newTicker}`);
+        // stopSignalMonitoring() 내부에서 monitoringActive가 false로 바뀌므로
+        // 미리 상태를 저장한 뒤 새 종목 모니터링 여부를 판단한다.
+        const wasActive = alertStorage.monitoringActive;
         stopSignalMonitoring(currentTicker);
-        if (alertStorage.monitoringActive) {
+        if (wasActive && !alertStorage.userDisabled) {
           startSignalMonitoring(newTicker);
         }
         updateMonitoringUI();
