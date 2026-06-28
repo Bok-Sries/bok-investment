@@ -48,6 +48,7 @@
     const cred = await auth.createUserWithEmailAndPassword(email, password);
     const uid = cred.user.uid;
     const admin = isAdminId(id);
+    const now = new Date().toISOString();
     const profile = {
       userId: normalizeId(id),
       email,
@@ -55,8 +56,8 @@
       role: admin ? "admin" : "user",
       watchlist: [],
       compareSymbols: [],
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      createdAt: now,
+      updatedAt: now,
     };
     await db.collection("users").doc(uid).set(profile);
     return { uid, status: profile.status, role: profile.role };
@@ -76,7 +77,7 @@
   }
 
   async function updateUser(uid, fields) {
-    await db.collection("users").doc(uid).update({ ...fields, updatedAt: serverTimestamp() });
+    await db.collection("users").doc(uid).update({ ...fields, updatedAt: new Date().toISOString() });
   }
 
   async function deleteUserDoc(uid) {
@@ -87,7 +88,7 @@
     await db.collection("users").doc(uid).update({
       watchlist,
       compareSymbols,
-      updatedAt: serverTimestamp(),
+      updatedAt: new Date().toISOString(),
     });
   }
 
