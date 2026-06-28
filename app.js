@@ -166,6 +166,10 @@ let symbolSearchRequestId = 0;
 const symbolMetaRequests = new Set();
 let authMode = "login";
 let currentUserId = null;
+// Firebase 인증 상태
+let currentProfile = null; // 현재 로그인 사용자의 Firestore 프로필
+let currentUserUid = null; // Firebase Auth uid
+let suppressAuthHandler = false; // 명시적 로그인/가입 처리 중에는 onAuthStateChanged 자동 처리를 막는다
 let tickerOptionsSignature = "";
 let lastRenderTickers = ""; // render() 최적화: watchlistSymbols 변경 감지
 
@@ -267,6 +271,7 @@ const elements = {
   authModeCopy: document.querySelector("#authModeCopy"),
   authSubmit: document.querySelector("#authSubmitBtn"),
   authModeToggle: document.querySelector("#authModeToggleBtn"),
+  logoutBtn: document.querySelector("#logoutBtn"),
   horizon: document.querySelector("#horizonSelect"),
   chartTitle: document.querySelector("#chartTitle"),
   signalPill: document.querySelector("#signalPill"),
@@ -642,41 +647,76 @@ function hydratePortfolioSymbolNames() {
 }
 
 function ensureAdminUser() {
-  const users = getStoredUsers();
-  if (users[ADMIN_USER_ID]) {
-    users[ADMIN_USER_ID] = { ...users[ADMIN_USER_ID], role: "admin", blocked: false };
-    saveStoredUsers(users);
-  }
+  // 관리자 권한은 Firebase(BokAuth)에서 처리한다. (아이디 "louise" = 관리자)
 }
 
 function normalizeUserId(value) {
   return value.trim().toLowerCase();
 }
 
-function loadUserPortfolio(userId) {
-  const users = getStoredUsers();
-  const user = users[userId];
-  watchlistSymbols = Array.isArray(user?.watchlist) ? [...user.watchlist] : [];
-  compareSymbols = Array.isArray(user?.compareSymbols) ? user.compareSymbols.filter((ticker) => watchlistSymbols.includes(ticker)).slice(0, 5) : [];
+function loadUserPortfolio() {
+  // 관심종목/비교종목은 로그인 시 가져온 Firestore 프로필에서 읽는다.
+  const user = currentProfile || {};
+  watchlistSymbols = Array.isArray(user.watchlist) ? [...user.watchlist] : [];
+  compareSymbols = Array.isArray(user.compareSymbols)
+    ? user.compareSymbols.filter((ticker) => watchlistSymbols.includes(ticker)).slice(0, 5)
+    : [];
   watchlistSortedByScore = false;
   hydratePortfolioSymbolNames();
 }
 
 function saveUserPortfolio() {
-  if (!currentUserId) return;
-  const users = getStoredUsers();
-  if (!users[currentUserId]) return;
-  users[currentUserId] = {
-    ...users[currentUserId],
-    watchlist: [...watchlistSymbols],
-    compareSymbols: compareSymbols.filter((ticker) => watchlistSymbols.includes(ticker)).slice(0, 5),
-    updatedAt: new Date().toISOString(),
-  };
-  saveStoredUsers(users);
+  if (!currentUserUid) return;
+  const watchlist = [...watchlistSymbols];
+  const compareSelection = compareSymbols.filter((ticker) => watchlistSymbols.includes(ticker)).slice(0, 5);
+  if (currentProfile) {
+    currentProfile.watchlist = watchlist;
+    currentProfile.compareSymbols = compareSelection;
+  }
+  // Firestore 저장은 비동기로 처리하고 UI는 막지 않는다.
+  if (window.BokAuth) BokAuth.saveWatchlist(currentUserUid, watchlist, compareSelection).catch(() => {});
 }
 
 function isAdminUser(userId = currentUserId) {
   return userId === ADMIN_USER_ID;
+}
+
+// 로그인 가능 여부 판정: 관리자는 무조건 통과, 그 외에는 승인(approved)된 계정만 통과.
+function decideAccess(id, profile) {
+  if (BokAuth.isAdminId(id)) return { ok: true };
+  if (!profile) return { ok: false, message: "프로필을 찾을 수 없습니다. 관리자에게 문의하세요." };
+  if (profile.status === "blocked") return { ok: false, message: "관리자가 차단한 계정입니다." };
+  if (profile.status !== "approved") return { ok: false, message: "가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다." };
+  return { ok: true };
+}
+
+function applyProfileAndUnlock(id, profile) {
+  currentProfile = profile || null;
+  currentUserUid = profile?.uid || BokAuth.auth.currentUser?.uid || null;
+  elements.loginError.textContent = "";
+  unlockDashboard(id);
+}
+
+function lockToLogin() {
+  currentUserId = null;
+  currentProfile = null;
+  currentUserUid = null;
+  document.body.classList.remove("is-authenticated", "is-admin");
+}
+
+function friendlyAuthError(error) {
+  const code = error?.code || "";
+  const map = {
+    "auth/email-already-in-use": "이미 등록된 아이디입니다.",
+    "auth/invalid-email": "사용할 수 없는 아이디 형식입니다.",
+    "auth/invalid-credential": "아이디 또는 패스워드를 확인하세요.",
+    "auth/wrong-password": "아이디 또는 패스워드를 확인하세요.",
+    "auth/user-not-found": "아이디 또는 패스워드를 확인하세요.",
+    "auth/weak-password": "비밀번호는 6자 이상이어야 합니다.",
+    "auth/too-many-requests": "시도가 너무 많습니다. 잠시 후 다시 시도하세요.",
+    "auth/network-request-failed": "네트워크 오류입니다. 연결을 확인하세요.",
+  };
+  return map[code] || `오류가 발생했습니다: ${error?.message || code}`;
 }
 
 function setAuthMode(nextMode) {
@@ -5561,37 +5601,65 @@ function addSelectedSymbolToWatchlist() {
 
 function formatAdminDate(value) {
   if (!value) return "-";
+  // Firestore Timestamp 객체 지원 (toDate)
+  const date = typeof value?.toDate === "function" ? value.toDate() : new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
   return new Intl.DateTimeFormat("ko-KR", {
     year: "2-digit",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date(value));
+  }).format(date);
 }
 
-function renderAdminUsers() {
+async function renderAdminUsers() {
   if (!elements.adminUserBody) return;
-  if (!isAdminUser()) {
+  if (!isAdminUser() || !window.BokAuth) {
     elements.adminUserBody.innerHTML = `<tr><td colspan="6">관리자 권한이 필요합니다.</td></tr>`;
     return;
   }
-  const users = getStoredUsers();
-  const rows = Object.entries(users).sort(([leftId], [rightId]) => leftId.localeCompare(rightId));
-  elements.adminUserBody.innerHTML = rows.length
-    ? rows
-        .map(([userId, user]) => {
-          const isAdmin = userId === ADMIN_USER_ID;
-          const blocked = Boolean(user.blocked);
+  elements.adminUserBody.innerHTML = `<tr><td colspan="6">가입자 목록을 불러오는 중...</td></tr>`;
+  let users = [];
+  try {
+    users = await BokAuth.listUsers();
+  } catch (error) {
+    elements.adminUserBody.innerHTML = `<tr><td colspan="6">목록을 불러오지 못했습니다: ${error?.message || error}</td></tr>`;
+    return;
+  }
+  users.sort((a, b) => String(a.userId || "").localeCompare(String(b.userId || "")));
+  const statusBadge = (status) => {
+    if (status === "approved") return `<span class="signal-badge neutral">정상</span>`;
+    if (status === "blocked") return `<span class="signal-badge defensive">차단</span>`;
+    return `<span class="signal-badge" style="background:#f59e0b;color:#1a1a1a;">승인대기</span>`;
+  };
+  elements.adminUserBody.innerHTML = users.length
+    ? users
+        .map((user) => {
+          const isAdmin = user.role === "admin";
+          const status = user.status || "pending";
+          const userId = user.userId || BokAuth.emailToId(user.email);
+          let actions = `<span style="opacity:.6">관리자</span>`;
+          if (!isAdmin) {
+            const buttons = [];
+            if (status === "pending") {
+              buttons.push(`<button class="table-action" type="button" data-admin-approve="${user.uid}">승인</button>`);
+              buttons.push(`<button class="table-action" type="button" data-admin-reject="${user.uid}">거절</button>`);
+            } else if (status === "approved") {
+              buttons.push(`<button class="table-action" type="button" data-admin-block="${user.uid}">차단</button>`);
+              buttons.push(`<button class="table-action danger" type="button" data-admin-delete="${user.uid}">삭제</button>`);
+            } else if (status === "blocked") {
+              buttons.push(`<button class="table-action" type="button" data-admin-approve="${user.uid}">차단해제</button>`);
+              buttons.push(`<button class="table-action danger" type="button" data-admin-delete="${user.uid}">삭제</button>`);
+            }
+            actions = buttons.join(" ");
+          }
           return `
-            <tr data-admin-user="${userId}">
+            <tr data-admin-user="${user.uid}">
               <td><strong>${userId}</strong></td>
               <td>${isAdmin ? "관리자" : "사용자"}</td>
-              <td><span class="signal-badge ${blocked ? "defensive" : "neutral"}">${blocked ? "차단" : "정상"}</span></td>
+              <td>${statusBadge(status)}</td>
               <td>${Array.isArray(user.watchlist) ? user.watchlist.length : 0}</td>
               <td>${formatAdminDate(user.createdAt)}</td>
-              <td>
-                <button class="table-action" type="button" data-admin-block="${userId}" ${isAdmin ? "disabled" : ""}>${blocked ? "차단 해제" : "차단"}</button>
-                <button class="table-action danger" type="button" data-admin-delete="${userId}" ${isAdmin ? "disabled" : ""}>삭제</button>
-              </td>
+              <td>${actions}</td>
             </tr>
           `;
         })
@@ -5599,20 +5667,24 @@ function renderAdminUsers() {
     : `<tr><td colspan="6">가입자가 없습니다.</td></tr>`;
 }
 
-function toggleUserBlock(userId) {
-  if (!isAdminUser() || userId === ADMIN_USER_ID) return;
-  const users = getStoredUsers();
-  if (!users[userId]) return;
-  users[userId] = { ...users[userId], blocked: !users[userId].blocked, updatedAt: new Date().toISOString() };
-  saveStoredUsers(users);
+async function setUserStatus(uid, status) {
+  if (!isAdminUser() || !uid) return;
+  try {
+    await BokAuth.updateUser(uid, { status });
+  } catch (error) {
+    showToast(`처리 실패: ${error?.message || error}`, "error");
+  }
   renderAdminUsers();
 }
 
-function deleteUser(userId) {
-  if (!isAdminUser() || userId === ADMIN_USER_ID) return;
-  const users = getStoredUsers();
-  delete users[userId];
-  saveStoredUsers(users);
+async function deleteUser(uid) {
+  if (!isAdminUser() || !uid) return;
+  if (!window.confirm("이 가입자를 삭제할까요? (되돌릴 수 없습니다)")) return;
+  try {
+    await BokAuth.deleteUserDoc(uid);
+  } catch (error) {
+    showToast(`삭제 실패: ${error?.message || error}`, "error");
+  }
   renderAdminUsers();
 }
 
@@ -6423,9 +6495,19 @@ elements.symbolResults.addEventListener("click", (event) => {
 });
 elements.confirmSymbol.addEventListener("click", addSelectedSymbolToWatchlist);
 elements.adminUserBody?.addEventListener("click", (event) => {
+  const approveButton = event.target.closest("[data-admin-approve]");
+  if (approveButton) {
+    setUserStatus(approveButton.dataset.adminApprove, "approved");
+    return;
+  }
   const blockButton = event.target.closest("[data-admin-block]");
   if (blockButton) {
-    toggleUserBlock(blockButton.dataset.adminBlock);
+    setUserStatus(blockButton.dataset.adminBlock, "blocked");
+    return;
+  }
+  const rejectButton = event.target.closest("[data-admin-reject]");
+  if (rejectButton) {
+    deleteUser(rejectButton.dataset.adminReject);
     return;
   }
   const deleteButton = event.target.closest("[data-admin-delete]");
@@ -6449,61 +6531,71 @@ elements.themeToggle.addEventListener("click", () => {
 
 elements.loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!window.BokAuth) {
+    elements.loginError.textContent = "인증 서비스를 불러오지 못했습니다. 새로고침 후 다시 시도하세요.";
+    return;
+  }
   const id = normalizeUserId(elements.loginId.value);
   const password = elements.loginPassword.value;
   if (!id || !password) {
     elements.loginError.textContent = "아이디와 패스워드를 입력하세요.";
     return;
   }
+  if (password.length < 6) {
+    elements.loginError.textContent = "비밀번호는 6자 이상이어야 합니다.";
+    return;
+  }
 
-  const users = getStoredUsers();
-  if (authMode === "signup") {
-    if (id === ADMIN_USER_ID) {
-      elements.loginError.textContent = "관리자 아이디는 가입할 수 없습니다.";
+  elements.authSubmit.disabled = true;
+  suppressAuthHandler = true;
+  try {
+    await BokAuth.setPersistence(elements.rememberLogin.checked);
+
+    if (authMode === "signup") {
+      const result = await BokAuth.signUp(id, password);
+      if (result.status === "approved") {
+        // 관리자(louise)는 가입 즉시 로그인.
+        const profile = await BokAuth.getProfile(result.uid);
+        elements.loginPassword.value = "";
+        applyProfileAndUnlock(id, profile);
+      } else {
+        // 일반 가입자는 승인 대기 → 로그인시키지 않고 로그아웃.
+        await BokAuth.signOut();
+        elements.loginPassword.value = "";
+        setAuthMode("login");
+        elements.loginError.textContent = "가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다.";
+      }
       return;
     }
-    if (users[id]) {
-      elements.loginError.textContent = "이미 등록된 아이디입니다.";
-      return;
-    }
-    users[id] = {
-      ...(await createPasswordRecord(password)),
-      watchlist: [],
-      compareSymbols: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    saveStoredUsers(users);
-    elements.loginError.textContent = "";
-    elements.loginPassword.value = "";
-    saveAuthPreference(id);
-    unlockDashboard(id);
-    return;
-  }
 
-  if (users[id]?.blocked) {
-    elements.loginError.textContent = "관리자가 차단한 계정입니다.";
-    return;
-  }
-
-  const passwordVerification = await verifyUserPassword(users[id], password);
-  if (passwordVerification.ok) {
-    if (passwordVerification.migrate) {
-      users[id] = {
-        ...users[id],
-        ...(await createPasswordRecord(password)),
-        updatedAt: new Date().toISOString(),
-      };
-      delete users[id].password;
-      saveStoredUsers(users);
+    // 로그인
+    const { profile } = await BokAuth.signIn(id, password);
+    const decision = decideAccess(id, profile);
+    if (decision.ok) {
+      elements.loginPassword.value = "";
+      applyProfileAndUnlock(id, profile);
+    } else {
+      await BokAuth.signOut();
+      elements.loginError.textContent = decision.message;
     }
-    elements.loginError.textContent = "";
-    elements.loginPassword.value = "";
-    saveAuthPreference(id);
-    unlockDashboard(id);
-    return;
+  } catch (error) {
+    elements.loginError.textContent = friendlyAuthError(error);
+  } finally {
+    suppressAuthHandler = false;
+    elements.authSubmit.disabled = false;
   }
-  elements.loginError.textContent = "아이디 또는 패스워드를 확인하세요.";
+});
+
+elements.logoutBtn?.addEventListener("click", async () => {
+  if (!window.BokAuth) return;
+  suppressAuthHandler = false;
+  try {
+    await BokAuth.signOut();
+  } catch {
+    /* onAuthStateChanged 가 로그인 화면으로 전환한다 */
+  }
+  lockToLogin();
+  setAuthMode("login");
 });
 
 elements.authModeToggle.addEventListener("click", () => {
@@ -6526,19 +6618,36 @@ setupAlertEventListeners();
 window.addEventListener("resize", render);
 document.body.dataset.theme = safeStorageGet(localStore, "bok-invest-theme") || "dark";
 document.body.dataset.activeView = "dashboard";
-ensureAdminUser();
-safeStorageRemove(sessionStore, "bok-invest-authenticated");
 elements.themeToggle.setAttribute("aria-checked", document.body.dataset.theme === "dark" ? "true" : "false");
 setAuthMode("login");
-const rememberedUserId = safeStorageGet(localStore, AUTH_REMEMBER_KEY);
-const sessionUserId = safeStorageGet(sessionStore, AUTH_SESSION_KEY);
-const autoLoginUserId = rememberedUserId || sessionUserId;
-const storedUsers = getStoredUsers();
-if (autoLoginUserId && storedUsers[autoLoginUserId] && !storedUsers[autoLoginUserId].blocked) {
-  elements.rememberLogin.checked = rememberedUserId === autoLoginUserId;
-  unlockDashboard(autoLoginUserId);
-} else if (autoLoginUserId) {
-  clearAuthPreference();
+
+// Firebase 인증 상태 감지: 새로고침/재방문 시 자동 로그인 + 승인 상태 재확인
+if (window.BokAuth) {
+  BokAuth.onAuthStateChanged(async (user) => {
+    if (suppressAuthHandler) return; // 명시적 로그인/가입 처리 중에는 건너뛴다
+    if (!user) {
+      lockToLogin();
+      return;
+    }
+    try {
+      const profile = await BokAuth.getProfile(user.uid);
+      const id = BokAuth.emailToId(user.email);
+      const decision = decideAccess(id, profile);
+      if (decision.ok) {
+        applyProfileAndUnlock(id, profile);
+      } else {
+        await BokAuth.signOut();
+        lockToLogin();
+        elements.loginError.textContent = decision.message;
+      }
+    } catch (error) {
+      lockToLogin();
+      elements.loginError.textContent = friendlyAuthError(error);
+    }
+  });
+} else {
+  lockToLogin();
+  elements.loginError.textContent = "인증 서비스를 불러오지 못했습니다. 새로고침 해주세요.";
 }
 // 🚀 초기 로딩 최적화
 console.time("초기 로딩");
