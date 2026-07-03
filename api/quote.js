@@ -247,6 +247,42 @@ async function fetchNaverQuote(symbol) {
   }
 }
 
+// 네이버 해외주식 현재가 (나스닥 .O / NYSE .N 순차 시도). Yahoo·Stooq·Google 대체용.
+async function fetchNaverWorldQuote(symbol) {
+  if (isDomesticSymbol(symbol)) return null;
+  const bare = symbol.replace(/\.(O|N)$/i, "");
+  for (const suffix of [".O", ".N"]) {
+    try {
+      const reuters = `${bare}${suffix}`;
+      const url = `https://api.stock.naver.com/stock/${encodeURIComponent(reuters)}/basic`;
+      const response = await fetchWithTimeout(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+          Accept: "application/json,text/plain,*/*",
+        },
+      });
+      if (!response.ok) continue;
+      const data = await response.json();
+      const price = toNumber(data?.closePrice);
+      if (price === null) continue;
+      const percent = toNumber(data?.fluctuationsRatio);
+      const change = toNumber(data?.compareToPreviousClosePrice);
+      return {
+        price,
+        change,
+        changePercent: percent === null ? null : percent / 100,
+        quote: reuters,
+        source: "Naver 해외 지연",
+        fetchedAt: data?.localTradedAt || new Date().toISOString(),
+      };
+    } catch {
+      // 다음 접미사 시도
+    }
+  }
+  return null;
+}
+
 async function fetchStooqQuote(symbol) {
   const stooqSymbol = getStooqSymbol(symbol);
   if (!stooqSymbol) return null;
@@ -331,6 +367,17 @@ export default async function handler(request, response) {
     } catch {
       // Fall back to Yahoo and Google.
     }
+  }
+
+  // 해외 종목: 네이버 해외 API 우선 (Yahoo 429·Stooq 중단·Google 302 대응)
+  try {
+    const payload = await fetchNaverWorldQuote(symbol);
+    if (payload) {
+      sendQuote(response, symbol, payload);
+      return;
+    }
+  } catch {
+    // Fall back to Yahoo.
   }
 
   try {

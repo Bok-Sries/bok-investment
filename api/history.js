@@ -157,6 +157,47 @@ async function fetchNaverHistory(symbol) {
   }
 }
 
+// 네이버 해외주식 일봉 (나스닥 .O / NYSE .N 순차 시도). Yahoo 대체용.
+async function fetchNaverWorldHistory(symbol) {
+  if (isDomesticSymbol(symbol)) return null;
+  const bare = symbol.replace(/\.(O|N)$/i, "");
+  const end = getKoreaDate();
+  const start = new Date(end);
+  start.setMonth(start.getMonth() - 4);
+  const startStr = formatCompactDate(start);
+  const endStr = formatCompactDate(end);
+  for (const suffix of [".O", ".N"]) {
+    try {
+      const reuters = `${bare}${suffix}`;
+      const url = `https://api.stock.naver.com/chart/foreign/item/${encodeURIComponent(reuters)}/day?startDateTime=${startStr}&endDateTime=${endStr}`;
+      const response = await fetchWithTimeout(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+          Accept: "application/json,text/plain,*/*",
+        },
+      });
+      if (!response.ok) continue;
+      const arr = await response.json();
+      if (!Array.isArray(arr)) continue;
+      const rows = arr
+        .map((row) => ({
+          date: String(row.localDate).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3"),
+          open: Number(row.openPrice),
+          high: Number(row.highPrice),
+          low: Number(row.lowPrice),
+          close: Number(row.closePrice),
+          volume: Number(row.accumulatedTradingVolume || 0),
+        }))
+        .filter((row) => Number.isFinite(row.close));
+      if (rows.length >= 5) return rows;
+    } catch {
+      // 다음 접미사 시도
+    }
+  }
+  return null;
+}
+
 export default async function handler(request, response) {
   response.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=300");
   response.setHeader("Access-Control-Allow-Origin", "*");
@@ -190,6 +231,20 @@ export default async function handler(request, response) {
         });
         return;
       }
+    }
+
+    // 해외 종목: 네이버 해외 일봉 우선 (Yahoo 429·차단 대응)
+    const worldRows = await fetchNaverWorldHistory(symbol);
+    if (worldRows) {
+      response.status(200).json({
+        symbol,
+        prices: worldRows.map((row) => row.close),
+        dates: worldRows.map((row) => row.date),
+        ohlcv: worldRows,
+        source: "Naver 해외 일봉",
+        fetchedAt: new Date().toISOString(),
+      });
+      return;
     }
 
     const endpoint = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=3mo&interval=1d`;
