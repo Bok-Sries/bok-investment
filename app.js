@@ -54,12 +54,13 @@ const companyProfiles = {
   "035720.KS": { sector: "Communication Services", industry: "Internet Content", country: "Korea", employees: 3900, cap: "Mid", beta: 1.48 },
 };
 
+// 시드(fallback)값: API 미연결 시 표시되는 스냅샷. 2026-07-02~03 종가 기준(네이버 확인값).
 const marketIndices = {
-  KOSPI: { symbol: "KOSPI:KRX", value: 2742.3, change: 0.008, source: "종가" },
-  KOSDAQ: { symbol: "KQ11:KOSDAQ", value: 872.1, change: 0.004, source: "종가" },
-  NASDAQ: { symbol: ".IXIC:INDEXNASDAQ", value: 16384.2, change: 0.011, source: "종가" },
-  SP500: { symbol: ".INX:INDEXSP", value: 5178.8, change: 0.006, source: "종가" },
-  DOW: { symbol: ".DJI:INDEXDJX", value: 39424.7, change: -0.002, source: "종가" },
+  KOSPI: { symbol: "KOSPI:KRX", value: 8088.34, change: 0.0576, source: "종가" },
+  KOSDAQ: { symbol: "KQ11:KOSDAQ", value: 868.41, change: 0.0019, source: "종가" },
+  NASDAQ: { symbol: ".IXIC:INDEXNASDAQ", value: 25832.67, change: -0.008, source: "종가" },
+  SP500: { symbol: ".INX:INDEXSP", value: 7483.24, change: 0.0, source: "종가" },
+  DOW: { symbol: ".DJI:INDEXDJX", value: 52900.07, change: 0.0114, source: "종가" },
 };
 
 let marketIndicesLoaded = false;
