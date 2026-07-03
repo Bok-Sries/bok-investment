@@ -4729,7 +4729,84 @@ function getDanteSetup(ticker) {
         ? "눌림목 진입"
         : "신호 대기";
 
+  // 🆕 파동 분석 (주식단테 파동 이론): 지그재그 스윙 → 저점·고점 갱신 구조 → 파동 단계
+  const zigzag = [];
+  {
+    const zzThreshold = 0.03; // 3% 이상 반전만 스윙으로 인정
+    let direction = 0;
+    let extremeIdx = 0;
+    for (let i = 1; i < closes.length; i += 1) {
+      const change = (closes[i] - closes[extremeIdx]) / closes[extremeIdx];
+      if (direction >= 0 && change <= -zzThreshold) {
+        zigzag.push({ idx: extremeIdx, price: closes[extremeIdx], type: "H" });
+        direction = -1;
+        extremeIdx = i;
+      } else if (direction <= 0 && change >= zzThreshold) {
+        zigzag.push({ idx: extremeIdx, price: closes[extremeIdx], type: "L" });
+        direction = 1;
+        extremeIdx = i;
+      } else if ((direction >= 0 && closes[i] >= closes[extremeIdx]) || (direction < 0 && closes[i] <= closes[extremeIdx])) {
+        extremeIdx = i;
+      }
+    }
+    zigzag.push({ idx: extremeIdx, price: closes[extremeIdx], type: direction < 0 ? "L" : "H" });
+  }
+  const swingLows = zigzag.filter((p) => p.type === "L");
+  const swingHighs = zigzag.filter((p) => p.type === "H");
+  const lastLow = swingLows.at(-1);
+  const lastHigh = swingHighs.at(-1);
+  const higherLows = swingLows.length >= 2 && swingLows.at(-1).price > swingLows.at(-2).price * 1.002;
+  const higherHighs = swingHighs.length >= 2 && swingHighs.at(-1).price > swingHighs.at(-2).price * 1.002;
+  // 파동 단계: 연속 저점 갱신 횟수로 1파/2파(조정)/3파 추정
+  let upWaveCount = 0;
+  for (let i = swingLows.length - 1; i > 0; i -= 1) {
+    if (swingLows[i].price > swingLows[i - 1].price) upWaveCount += 1;
+    else break;
+  }
+  const waveStage =
+    upWaveCount >= 2 && higherHighs ? "3파 진행(상승 확장)" : upWaveCount >= 1 && pullbackDepth > 0.02 ? "2파 조정(눌림)" : upWaveCount >= 1 ? "1파 시작" : "파동 미형성";
+  // 피보나치 되돌림: 직전 상승파(마지막 저점→고점) 대비 현재 눌림 위치
+  const waveLength = lastLow && lastHigh && lastHigh.idx > lastLow.idx ? lastHigh.price - lastLow.price : 0;
+  const fibRetrace = waveLength > 0 ? (lastHigh.price - latest.close) / waveLength : 0;
+  const fibZoneOk = waveLength > 0 && fibRetrace >= 0.3 && fibRetrace <= 0.66 && latest.close > (lastLow?.price || 0);
+  // N자 목표가 (measured move): 눌림 저점 + 직전 파동 길이
+  const nWaveTarget = waveLength > 0 ? latest.close + waveLength * (1 - Math.min(fibRetrace, 0.66)) : recentHigh * 1.05;
+  // 쌍바닥(W): 최근 두 저점이 ±3% 이내 + 사이 반등 4% 이상
+  const doubleBottom =
+    swingLows.length >= 2 &&
+    Math.abs(swingLows.at(-1).price - swingLows.at(-2).price) / swingLows.at(-2).price <= 0.03 &&
+    swingHighs.some((h) => h.idx > swingLows.at(-2).idx && h.idx < swingLows.at(-1).idx && h.price > swingLows.at(-2).price * 1.04);
+  // 거래량 파동 확인: 상승일 거래량 > 하락일 거래량 (세력 매집 확인)
+  const recent20 = indicators.slice(-20);
+  const upVol = average(recent20.filter((r, i) => i > 0 && r.close >= recent20[i - 1].close).map((r) => r.volumeRatio) || [0]);
+  const downVol = average(recent20.filter((r, i) => i > 0 && r.close < recent20[i - 1].close).map((r) => r.volumeRatio) || [0]);
+  const volumeWaveConfirm = Number.isFinite(upVol) && Number.isFinite(downVol) && upVol > downVol * 1.1;
+
   const checks = [
+    {
+      label: "파동 구조 - 저점·고점 높이기",
+      body: `스윙 저점 ${swingLows.length}개 분석. 저점 갱신 ${higherLows ? "✓" : "✗"}, 고점 갱신 ${higherHighs ? "✓" : "✗"}. 현재 ${waveStage}.`,
+      pass: higherLows && higherHighs,
+      weight: 12,
+    },
+    {
+      label: "피보나치 되돌림 눌림 (30~66%)",
+      body: `직전 상승파 ${formatPrice(waveLength, ticker)} 대비 되돌림 ${(fibRetrace * 100).toFixed(0)}%. 38.2~61.8% 구간 눌림이 단테 눌림목의 정석입니다.`,
+      pass: fibZoneOk,
+      weight: 10,
+    },
+    {
+      label: "쌍바닥(W) 패턴",
+      body: `최근 두 스윙 저점의 가격 차이와 사이 반등폭으로 W 구조를 점검합니다. ${doubleBottom ? "✓ 감지" : "✗ 미감지"}`,
+      pass: doubleBottom,
+      weight: 8,
+    },
+    {
+      label: "거래량 파동 확인 (상승일>하락일)",
+      body: `최근 20일 상승일 평균 거래량 ${upVol.toFixed(2)}배 vs 하락일 ${downVol.toFixed(2)}배. 상승 시 거래량 우위 = 세력 개입 흔적.`,
+      pass: volumeWaveConfirm,
+      weight: 8,
+    },
     {
       label: "단테 이평 때리기 - 역배열 → 정배열",
       body: `112일선(${formatPrice(sma112Approx, ticker)}) ${isNormalOrder ? "정배열" : "미정배열"}, 이평선 괴리도 ${(maLineDistance * 100).toFixed(1)}%. 역배열 전환 신호: ${maLineReversal ? "✓ 확인" : "✗ 미확인"}`,
@@ -4902,6 +4979,17 @@ function getDanteSetup(ticker) {
       status: breakoutSignal ? "돌파 신호 ✓" : "미돌파 ✗",
       signal: breakoutSignal ? "💰 추격" : "관찰",
       details: `저항선: ${formatPrice(resistanceLine, ticker)} | 거래량: ${latest.volumeRatio.toFixed(1)}배 | 현재가: ${formatPrice(latest.close, ticker)}`
+    },
+
+    waveAnalysis: {
+      name: "파동 분석",
+      icon: "🌊",
+      score: (higherLows && higherHighs ? 12 : 0) + (fibZoneOk ? 10 : 0) + (doubleBottom ? 8 : 0) + (volumeWaveConfirm ? 8 : 0),
+      maxScore: 38,
+      percent: Math.round((((higherLows && higherHighs ? 12 : 0) + (fibZoneOk ? 10 : 0) + (doubleBottom ? 8 : 0) + (volumeWaveConfirm ? 8 : 0)) / 38) * 100),
+      status: waveStage,
+      signal: higherLows && higherHighs && fibZoneOk ? "💰 N자 눌림목" : higherLows ? "파동 형성 중" : "대기",
+      details: `되돌림: ${(fibRetrace * 100).toFixed(0)}% | N자 목표가: ${formatPrice(nWaveTarget, ticker)} | 쌍바닥: ${doubleBottom ? "✓" : "✗"} | 거래량 파동: ${volumeWaveConfirm ? "✓" : "✗"}`
     }
   };
 
@@ -4992,11 +5080,27 @@ function getDanteSetup(ticker) {
     techniquesTotal,
     techniquesCombined,
     actionGuide,
+    // 🆕 파동 분석
+    zigzag,
+    waveStage,
+    higherLows,
+    higherHighs,
+    fibRetrace,
+    fibZoneOk,
+    nWaveTarget,
+    doubleBottom,
+    volumeWaveConfirm,
+    upWaveCount,
   };
 }
 
 function getDanteVideoRules(setup) {
   return [
+    {
+      title: "파동 이론 - N자 파동 & 피보나치 눌림",
+      state: setup.higherLows && setup.higherHighs && setup.fibZoneOk ? "💰 N자 눌림목" : setup.higherLows ? "파동 형성 중" : "대기",
+      body: `저점·고점을 높이는 상승 파동 구조(현재 ${setup.waveStage})에서, 직전 상승파의 38.2~61.8% 되돌림(현재 ${(setup.fibRetrace * 100).toFixed(0)}%)이 정석 눌림목. N자 목표가: ${formatPrice(setup.nWaveTarget, setup.ticker)}. 쌍바닥 ${setup.doubleBottom ? "감지 ✓" : "미감지"}, 상승일 거래량 우위 ${setup.volumeWaveConfirm ? "확인 ✓" : "미확인"}.`,
+    },
     {
       title: "단테 이평 때리기 - 448/224/112일선",
       state: setup.maLineReversal ? "💰 매수신호" : setup.isNormalOrder ? "강세" : "약세",
