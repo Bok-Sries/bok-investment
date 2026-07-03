@@ -4782,7 +4782,34 @@ function getDanteSetup(ticker) {
   const downVol = average(recent20.filter((r, i) => i > 0 && r.close < recent20[i - 1].close).map((r) => r.volumeRatio) || [0]);
   const volumeWaveConfirm = Number.isFinite(upVol) && Number.isFinite(downVol) && upVol > downVol * 1.1;
 
+  // 🆕 역매공파 112 (주식단테): 역배열 → 매집봉 → 공중부양(단기선의 112일선 돌파) → 파동 시작
+  const sma5Now = average(closes.slice(-5));
+  const sma20Now = average(closes.slice(-20));
+  const ymgp = {
+    yeok: isReverseOrder || (!isNormalOrder && verticalDecline >= 0.12), // 역: 역배열(또는 큰 하락 후 미정배열)
+    mae: hasAccumulationCandle || hasLongUpperWick, // 매: 매집봉(대량거래/피뢰침)
+    gong: sma5Now > sma112Approx && latest.close > sma112Approx && sma20Now >= sma112Approx * 0.98, // 공: 5·20일선 112선 돌파(공중부양)
+    pa: higherLows || nWaveReady || upWaveCount >= 1, // 파: 파동 시작
+  };
+  const ymgpCount = Object.values(ymgp).filter(Boolean).length;
+  const ymgpComplete = ymgpCount === 4;
+  const ymgpStage = ymgpComplete
+    ? "4단계 완성 - 진입 후보"
+    : ymgp.yeok && ymgp.mae && ymgp.gong
+      ? "3단계 공중부양 - 파동 대기"
+      : ymgp.yeok && ymgp.mae
+        ? "2단계 매집 확인 - 돌파 대기"
+        : ymgp.yeok
+          ? "1단계 역배열 - 매집 관찰"
+          : "역배열 아님 - 대상 외";
+
   const checks = [
+    {
+      label: "역매공파 112 (역배열→매집→공중부양→파동)",
+      body: `역배열 ${ymgp.yeok ? "✓" : "✗"} → 매집봉 ${ymgp.mae ? "✓" : "✗"} → 공중부양(5일선 ${formatPrice(sma5Now, ticker)} vs 112선 ${formatPrice(sma112Approx, ticker)}) ${ymgp.gong ? "✓" : "✗"} → 파동 ${ymgp.pa ? "✓" : "✗"}. 현재 ${ymgpStage}.`,
+      pass: ymgpComplete,
+      weight: 14,
+    },
     {
       label: "파동 구조 - 저점·고점 높이기",
       body: `스윙 저점 ${swingLows.length}개 분석. 저점 갱신 ${higherLows ? "✓" : "✗"}, 고점 갱신 ${higherHighs ? "✓" : "✗"}. 현재 ${waveStage}.`,
@@ -4981,6 +5008,17 @@ function getDanteSetup(ticker) {
       details: `저항선: ${formatPrice(resistanceLine, ticker)} | 거래량: ${latest.volumeRatio.toFixed(1)}배 | 현재가: ${formatPrice(latest.close, ticker)}`
     },
 
+    ymgp112: {
+      name: "역매공파 112",
+      icon: "🏹",
+      score: ymgpCount * 3.5,
+      maxScore: 14,
+      percent: Math.round((ymgpCount / 4) * 100),
+      status: ymgpStage,
+      signal: ymgpComplete ? "💰 진입 후보" : ymgpCount >= 2 ? "관찰" : "대기",
+      details: `역배열 ${ymgp.yeok ? "✓" : "✗"} | 매집봉 ${ymgp.mae ? "✓" : "✗"} | 공중부양 ${ymgp.gong ? "✓" : "✗"} | 파동 ${ymgp.pa ? "✓" : "✗"}`
+    },
+
     waveAnalysis: {
       name: "파동 분석",
       icon: "🌊",
@@ -5080,6 +5118,11 @@ function getDanteSetup(ticker) {
     techniquesTotal,
     techniquesCombined,
     actionGuide,
+    // 🆕 역매공파 112
+    ymgp,
+    ymgpCount,
+    ymgpComplete,
+    ymgpStage,
     // 🆕 파동 분석
     zigzag,
     waveStage,
@@ -5096,6 +5139,11 @@ function getDanteSetup(ticker) {
 
 function getDanteVideoRules(setup) {
   return [
+    {
+      title: "역매공파 112 - 역배열·매집·공중부양·파동",
+      state: setup.ymgpComplete ? "💰 진입 후보" : setup.ymgpCount >= 2 ? "관찰" : "대기",
+      body: `단테 대표 기법: ① 역배열(장기 하락) 종목에서 ② 매집봉(대량거래·피뢰침)을 확인하고 ③ 5·20일선이 112일선을 돌파하는 공중부양을 기다려 ④ 파동 시작에 올라탑니다. 현재 ${setup.ymgpStage} (${setup.ymgpCount}/4 충족).`,
+    },
     {
       title: "파동 이론 - N자 파동 & 피보나치 눌림",
       state: setup.higherLows && setup.higherHighs && setup.fibZoneOk ? "💰 N자 눌림목" : setup.higherLows ? "파동 형성 중" : "대기",
