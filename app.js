@@ -7021,16 +7021,16 @@ const signalResultsByMarket = { domestic: [], global: [] };
 const signalUniverseCache = { domestic: null, global: null };
 
 // 🆕 /api/universe 미사용(정적 호스팅 등) 시 내장 폴백 목록
-const SIGNAL_FALLBACK_KOSDAQ = [
-  ["247540", "에코프로비엠"], ["086520", "에코프로"], ["196170", "알테오젠"], ["028300", "HLB"],
-  ["348370", "엔켐"], ["058470", "리노공업"], ["068760", "셀트리온제약"], ["214150", "클래시스"],
-  ["277810", "레인보우로보틱스"], ["263750", "펄어비스"], ["035900", "JYP Ent."], ["041510", "에스엠"],
-  ["141080", "리가켐바이오"], ["145020", "휴젤"], ["357780", "솔브레인"], ["240810", "원익IPS"],
-  ["005290", "동진쎄미켐"], ["039030", "이오테크닉스"], ["036930", "주성엔지니어링"], ["293490", "카카오게임즈"],
-  ["112040", "위메이드"], ["087010", "펩트론"], ["257720", "실리콘투"], ["214450", "파마리서치"],
-  ["403870", "HPSP"], ["089030", "테크윙"], ["095340", "ISC"], ["086900", "메디톡스"],
-  ["195940", "HK이노엔"], ["328130", "루닛"], ["253450", "스튜디오드래곤"], ["122870", "와이지엔터테인먼트"],
-].map(([code, name]) => ({ ticker: `${code}.KQ`, name }));
+const SIGNAL_FALLBACK_KOSPI = [
+  ["005930", "삼성전자"], ["000660", "SK하이닉스"], ["373220", "LG에너지솔루션"], ["207940", "삼성바이오로직스"],
+  ["005380", "현대차"], ["000270", "기아"], ["068270", "셀트리온"], ["035420", "NAVER"],
+  ["105560", "KB금융"], ["055550", "신한지주"], ["005490", "POSCO홀딩스"], ["028260", "삼성물산"],
+  ["012330", "현대모비스"], ["051910", "LG화학"], ["006400", "삼성SDI"], ["035720", "카카오"],
+  ["086790", "하나금융지주"], ["012450", "한화에어로스페이스"], ["066570", "LG전자"], ["033780", "KT&G"],
+  ["096770", "SK이노베이션"], ["259960", "크래프톤"], ["015760", "한국전력"], ["030200", "KT"],
+  ["017670", "SK텔레콤"], ["034020", "두산에너빌리티"], ["009150", "삼성전기"], ["003670", "포스코퓨처엠"],
+  ["352820", "하이브"], ["036570", "엔씨소프트"], ["011070", "LG이노텍"], ["042700", "한미반도체"],
+].map(([code, name]) => ({ ticker: `${code}.KS`, name }));
 
 const SIGNAL_FALLBACK_NASDAQ = [
   ["AAPL", "Apple"], ["MSFT", "Microsoft"], ["NVDA", "NVIDIA"], ["AMZN", "Amazon"], ["AVGO", "Broadcom"],
@@ -7098,7 +7098,7 @@ async function getSignalUniverse(market) {
   } catch (e) {
     // 백엔드 없거나 실패 → 내장 폴백 사용
   }
-  if (!list.length) list = market === "global" ? SIGNAL_FALLBACK_NASDAQ : SIGNAL_FALLBACK_KOSDAQ;
+  if (!list.length) list = market === "global" ? SIGNAL_FALLBACK_NASDAQ : SIGNAL_FALLBACK_KOSPI;
   list = list.filter((s) => s && s.ticker).slice(0, 100);
   signalUniverseCache[market] = list;
   return list;
@@ -7186,7 +7186,7 @@ async function runSignalScan(market) {
 // 🆕 분석 완료 모달
 function showSignalResultModal(market, results, analyzed) {
   if (!signalElements.resultModal) return;
-  const marketLabel = market === "global" ? "해외(나스닥 100)" : "국내(코스닥 시총 100)";
+  const marketLabel = market === "global" ? "해외(나스닥 100)" : "국내(코스피 시총 100 · 당일 종가 기준)";
   const top = results.slice(0, 10);
   if (signalElements.resultTitle) signalElements.resultTitle.textContent = results.length ? "📊 분석 완료" : "분석 완료";
   if (signalElements.resultSubtitle) {
@@ -7230,6 +7230,23 @@ function renderSignalTable() {
       .map((signal, idx) => {
         const rank = idx + 1;
         const scoreColor = signal.totalScore >= 70 ? "#10b981" : signal.totalScore >= 50 ? "#f59e0b" : "#6b7280";
+        // 🚦 신호등: 점수·신뢰도 기반 3단계
+        const light =
+          signal.totalScore >= 70 && signal.confidence >= 60
+            ? { emoji: "🟢", label: "매수 신호", color: "#10b981" }
+            : signal.totalScore >= 45
+              ? { emoji: "🟡", label: "관찰", color: "#f59e0b" }
+              : { emoji: "🔴", label: "대기", color: "#6b7280" };
+        // 투자이유: 발동된 신호 근거를 한 문장으로
+        const reasons = [
+          ...(signal.signals?.dante?.details || []),
+          ...(signal.signals?.swing?.details || []),
+          ...(signal.signals?.upside?.details?.slice(0, 2) || []),
+          ...(signal.signals?.foreign?.details?.slice(0, 1) || []),
+        ];
+        const reasonText = reasons.length
+          ? reasons.slice(0, 4).join(" · ")
+          : "종가 흐름상 상승 조건 일부 충족";
 
         // 목표가 정보
         const targetInfo = signal.targets
@@ -7253,23 +7270,23 @@ function renderSignalTable() {
               ${upsideInfo}
             </td>
             <td style="padding: 12px; text-align: center;">
+              <div style="font-size: 1.3em; line-height: 1;">${light.emoji}</div>
+              <div style="font-weight: 700; color: ${light.color}; font-size: 0.85em; margin: 2px 0;">${light.label}</div>
               <span style="
                 background: ${scoreColor};
                 color: white;
-                padding: 4px 12px;
+                padding: 2px 10px;
                 border-radius: 20px;
                 font-weight: 600;
-                font-size: 0.9em;
-              ">${signal.totalScore}</span>
-              <div style="font-size: 0.75em; color: var(--muted); margin-top: 4px;">
-                신뢰도: ${signal.confidence}%
+                font-size: 0.8em;
+              ">${signal.totalScore}점</span>
+              <div style="font-size: 0.72em; color: var(--muted); margin-top: 3px;">
+                신뢰도 ${signal.confidence}%
               </div>
             </td>
             <td style="padding: 12px;">
-              <div style="font-size: 0.85em; line-height: 1.4;">
-                ${signal.signals.dante?.details?.length ? `<div>📊 ${signal.signals.dante.details.join(", ")}</div>` : ""}
-                ${signal.signals.swing?.details?.length ? `<div>📈 ${signal.signals.swing.details.join(", ")}</div>` : ""}
-                ${signal.signals.upside?.details?.length ? `<div>⚡ ${signal.signals.upside.details.slice(0, 2).join(", ")}</div>` : ""}
+              <div style="font-size: 0.85em; line-height: 1.5;">
+                <strong style="color: ${light.color};">투자이유:</strong> ${reasonText}
               </div>
             </td>
             <td style="padding: 12px; text-align: center;">
