@@ -344,6 +344,11 @@ const elements = {
   aiWatchPrice: document.querySelector("#aiWatchPrice"),
   aiOpinionCopy: document.querySelector("#aiOpinionCopy"),
   aiConfidence: document.querySelector("#aiConfidence"),
+  aiProbUp: document.querySelector("#aiProbUp"),
+  aiInterval: document.querySelector("#aiInterval"),
+  aiRegime: document.querySelector("#aiRegime"),
+  aiHitRate: document.querySelector("#aiHitRate"),
+  aiEnsembleList: document.querySelector("#aiEnsembleList"),
   aiVolatility: document.querySelector("#aiVolatility"),
   aiSharpe: document.querySelector("#aiSharpe"),
   aiInsights: document.querySelector("#aiInsightList"),
@@ -3569,6 +3574,22 @@ function renderModelAnalysis() {
 }
 
 function getAiPrediction(indicators) {
+  // 🆕 앙상블 엔진(칼만·Holt·모멘텀·평균회귀·kNN·릿지 + 워크포워드 검증 가중)을 우선 사용
+  if (window.AiEngine) {
+    try {
+      const engineResult = AiEngine.predict(indicators);
+      if (engineResult) {
+        return {
+          prediction: engineResult.prediction,
+          predictedReturn: engineResult.predictedReturn,
+          confidence: engineResult.confidence,
+          engine: engineResult,
+        };
+      }
+    } catch {
+      // 엔진 오류 시 아래 레거시 방식으로 계산한다.
+    }
+  }
   const latest = indicators.at(-1);
   const previous = indicators.at(-2);
   const priceChange = clamp((latest.close - previous.close) / previous.close, -0.04, 0.04);
@@ -3642,6 +3663,29 @@ function generateAiInsights(ticker, indicators, prediction) {
     prediction.predictedReturn >= 0 ? "positive" : "negative",
     `AI 예측은 다음 거래일 ${formatPercent(prediction.predictedReturn)} 변화를 제시하며 신뢰도는 ${Math.round(prediction.confidence)}%입니다.`,
   ]);
+
+  // 🆕 앙상블 엔진 기반 심화 해석
+  const engine = prediction.engine;
+  if (engine) {
+    const topModel = engine.models.slice().sort((a, b) => b.weight - a.weight)[0];
+    insights.push([
+      "neutral",
+      `현재 ${engine.regime.label} 국면으로 판단되어 ${engine.regime.trending ? "추세 추종" : "평균회귀·패턴"} 계열 모델의 비중을 높였습니다. 최근 검증에서 가장 정확했던 모델은 '${topModel.name}'(가중 ${Math.round(topModel.weight * 100)}%)입니다.`,
+    ]);
+    if (engine.mc) {
+      const tone = engine.mc.probUp >= 0.6 ? "positive" : engine.mc.probUp <= 0.4 ? "negative" : "neutral";
+      insights.push([
+        tone,
+        `몬테카를로 시뮬레이션 ${engine.mc.sims}회 기준 다음 거래일 상승 확률은 ${Math.round(engine.mc.probUp * 100)}%, 90% 예측구간은 ${formatPercent(engine.mc.p05)} ~ ${formatPercent(engine.mc.p95)}입니다.`,
+      ]);
+    }
+    const agreeCount = engine.models.filter((m) => (m.ret >= 0) === (engine.predictedReturn >= 0)).length;
+    if (agreeCount >= 5) {
+      insights.push(["positive", `6개 모델 중 ${agreeCount}개가 같은 방향을 가리켜 신호 합의도가 높습니다.`]);
+    } else if (agreeCount <= 3) {
+      insights.push(["neutral", `모델 간 방향 의견이 ${agreeCount}:${6 - agreeCount}으로 갈려 불확실성이 큽니다. 포지션 크기를 보수적으로 가져가는 것이 안전합니다.`]);
+    }
+  }
 
   return insights;
 }
@@ -3772,7 +3816,44 @@ function renderAiInsights(ticker) {
   if (elements.aiTechStrength) elements.aiTechStrength.textContent = `${techStrength.toFixed(0)}%`;
   if (elements.aiBasicStrength) elements.aiBasicStrength.textContent = `${basicStrength.toFixed(0)}%`;
   elements.aiPredictionPrice.textContent = formatPrice(prediction.prediction, ticker);
-  elements.aiPredictionCopy.textContent = `예상 변화율 ${formatPercent(prediction.predictedReturn)} 기준입니다.`;
+  const engine = prediction.engine;
+  elements.aiPredictionCopy.textContent = engine
+    ? `6개 모델 앙상블 예상 변화율 ${formatPercent(prediction.predictedReturn)} (최근 ${engine.validatedSteps}일 워크포워드 검증 가중)`
+    : `예상 변화율 ${formatPercent(prediction.predictedReturn)} 기준입니다.`;
+
+  // 🆕 앙상블 엔진 상세 지표
+  if (elements.aiProbUp) {
+    elements.aiProbUp.textContent = engine?.mc ? `${Math.round(engine.mc.probUp * 100)}%` : "-";
+  }
+  if (elements.aiInterval) {
+    elements.aiInterval.textContent = engine?.mc
+      ? `${formatPercent(engine.mc.p05)} ~ ${formatPercent(engine.mc.p95)}`
+      : "-";
+  }
+  if (elements.aiRegime) elements.aiRegime.textContent = engine ? engine.regime.label : "-";
+  if (elements.aiHitRate) {
+    elements.aiHitRate.textContent = engine ? `${Math.round(engine.ensembleHitRate * 100)}%` : "-";
+  }
+  if (elements.aiEnsembleList) {
+    elements.aiEnsembleList.innerHTML = engine
+      ? engine.models
+          .slice()
+          .sort((a, b) => b.weight - a.weight)
+          .map(
+            (model) => `
+              <div class="importance-row">
+                <header>
+                  <strong>${model.name}</strong>
+                  <span>${formatPercent(model.ret)} · 가중 ${Math.round(model.weight * 100)}%</span>
+                </header>
+                <div class="importance-bar"><i style="width:${Math.max(4, model.weight * 100)}%"></i></div>
+                <p>검증 방향 적중률 ${Math.round(model.hitRate * 100)}% · ${model.kind === "trend" ? "추세 추종형" : model.kind === "range" ? "횡보/회귀형" : "머신러닝(특징 학습)"}</p>
+              </div>
+            `,
+          )
+          .join("")
+      : `<div class="empty-state">데이터가 충분하면 앙상블 구성이 표시됩니다.</div>`;
+  }
   updateOpinionCard(
     "ai",
     aiOpinion,
@@ -5961,6 +6042,10 @@ function renderEmptyDashboard() {
   elements.aiConfidence.textContent = "-";
   elements.aiVolatility.textContent = "-";
   elements.aiSharpe.textContent = "-";
+  [elements.aiProbUp, elements.aiInterval, elements.aiRegime, elements.aiHitRate].forEach((item) => {
+    if (item) item.textContent = "-";
+  });
+  if (elements.aiEnsembleList) elements.aiEnsembleList.innerHTML = `<div class="empty-state">종목 등록 후 앙상블 구성이 표시됩니다.</div>`;
   elements.aiInsights.innerHTML = `<li class="neutral">분석할 종목을 등록하면 AI 인사이트가 표시됩니다.</li>`;
   elements.featureImportance.innerHTML = `<div class="empty-state">종목 등록 후 특징 중요도가 표시됩니다.</div>`;
   elements.companyInfo.innerHTML = `<div class="empty-state">종목 등록 후 회사 정보가 표시됩니다.</div>`;

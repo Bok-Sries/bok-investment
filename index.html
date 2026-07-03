@@ -1305,6 +1305,22 @@
                   <strong id="aiConfidence">-</strong>
                 </div>
                 <div>
+                  <span>상승 확률 (MC)</span>
+                  <strong id="aiProbUp">-</strong>
+                </div>
+                <div>
+                  <span>90% 예측구간</span>
+                  <strong id="aiInterval">-</strong>
+                </div>
+                <div>
+                  <span>시장 국면</span>
+                  <strong id="aiRegime">-</strong>
+                </div>
+                <div>
+                  <span>방향 적중률 (검증)</span>
+                  <strong id="aiHitRate">-</strong>
+                </div>
+                <div>
                   <span>연환산 변동성</span>
                   <strong id="aiVolatility">-</strong>
                 </div>
@@ -1320,6 +1336,11 @@
             <article class="tool-panel">
               <h3>AI 시장 해석</h3>
               <ul class="ai-insight-list" id="aiInsightList"></ul>
+            </article>
+            <article class="tool-panel">
+              <h3>앙상블 모델 구성</h3>
+              <p style="margin: 0 0 12px; font-size: 0.82rem; opacity: 0.7;">6개 예측 모델을 최근 50일 워크포워드 검증 정확도로 가중 결합합니다. 시장 국면에 따라 추세/회귀 모델 비중이 자동 조정됩니다.</p>
+              <div class="importance-list" id="aiEnsembleList"></div>
             </article>
             <article class="tool-panel">
               <h3>특징 중요도</h3>
@@ -1554,6 +1575,7 @@
     <script src="./signal-scanner.js"></script>
     <script src="./foreign-institution-data.js"></script>
     <script src="./advanced-signal-detector.js"></script>
+    <script src="./ai-prediction-engine.js"></script>
     <!-- Firebase (인증 + 가입자 관리). app.js 보다 먼저 로드되어야 함. -->
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
@@ -1562,3 +1584,4 @@
     <script src="./app.js"></script>
   </body>
 </html>
+<!-- rebuild trigger -->
