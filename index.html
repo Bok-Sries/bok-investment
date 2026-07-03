@@ -1421,17 +1421,47 @@
               <h2>종목신호기</h2>
               <p style="margin: 4px 0 0; opacity: 0.7; font-size: 0.9em;">당일 종가 기준 시가총액 상위 100개 종목(국내: 코스피 100 / 해외: 나스닥 100)을 분석해 투자 신호를 🚦 신호등과 투자이유로 알려드립니다.</p>
             </div>
-            <div style="display: flex; gap: 8px;">
-              <button id="signalRefreshBtn" type="button" style="padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <button id="signalRefreshBtn" type="button" style="
+                padding: 12px 24px;
+                background: var(--primary);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                font-weight: 700;
+                font-size: 1em;
+                box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+                transition: all 0.2s ease;
+              " onmouseover="this.style.boxShadow='0 4px 12px rgba(99, 102, 241, 0.5)'" onmouseout="this.style.boxShadow='0 2px 8px rgba(99, 102, 241, 0.3)'">
                 ▶ 분석 시작
               </button>
-              <select id="signalFilterSelect" style="padding: 8px 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-secondary); cursor: pointer;">
-                <option value="all">모든 신호</option>
-                <option value="dante">단테 신호</option>
-                <option value="swing">스윙 신호</option>
-                <option value="technical">기술지표</option>
-                <option value="foreign">수급 신호</option>
-              </select>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <label for="signalFilterSelect" style="font-weight: 600; color: var(--muted); white-space: nowrap;">필터:</label>
+                <select id="signalFilterSelect" style="
+                  padding: 10px 14px;
+                  border: 2px solid var(--border);
+                  border-radius: 6px;
+                  background: white;
+                  color: var(--ink);
+                  cursor: pointer;
+                  font-weight: 500;
+                  font-size: 0.95em;
+                  min-width: 140px;
+                  transition: all 0.2s ease;
+                  appearance: none;
+                  background-image: url('data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 viewBox=%220 0 16 16%22%3E%3Cpath fill=%22%236b7280%22 d=%22M8 11L3 6h10z%22/%3E%3C/svg%3E');
+                  background-repeat: no-repeat;
+                  background-position: right 8px center;
+                  padding-right: 32px;
+                " onmouseover="this.style.borderColor='var(--primary)'" onmouseout="this.style.borderColor='var(--border)'">
+                  <option value="all">모든 신호</option>
+                  <option value="dante">단테 신호</option>
+                  <option value="swing">스윙 신호</option>
+                  <option value="technical">기술지표</option>
+                  <option value="foreign">수급 신호</option>
+                </select>
+              </div>
             </div>
           </div>
 
