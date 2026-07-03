@@ -167,6 +167,20 @@ let symbolSearchRequestId = 0;
 const symbolMetaRequests = new Set();
 let authMode = "login";
 let currentUserId = null;
+// 차트 이동평균선 표시 상태 (기본 5·20일)
+const maState = new Set([5, 20]);
+const MA_COLORS = { 1: "#8a94a6", 5: "#f59e0b", 20: "#3b82f6", 60: "#a855f7", 120: "#10b981" };
+function simpleMovingAverage(values, period) {
+  const out = new Array(values.length).fill(null);
+  if (period <= 1) return values.slice();
+  let sum = 0;
+  for (let i = 0; i < values.length; i += 1) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
 // Firebase 인증 상태
 let currentProfile = null; // 현재 로그인 사용자의 Firestore 프로필
 let currentUserUid = null; // Firebase Auth uid
@@ -1621,7 +1635,45 @@ function drawChart(prices, projected, volatility, ticker = elements.ticker.value
   ctx.fillStyle = "rgba(255, 194, 71, 0.22)";
   ctx.fill();
 
-  drawLine(prices, 0, getThemeColor("--ink"), 3);
+  // 실제 가격선 아래 그라디언트 영역 (세련된 area 차트)
+  const areaGrad = ctx.createLinearGradient(0, padding.top, 0, height - padding.bottom);
+  areaGrad.addColorStop(0, "rgba(99, 132, 241, 0.28)");
+  areaGrad.addColorStop(1, "rgba(99, 132, 241, 0.02)");
+  ctx.beginPath();
+  prices.forEach((value, index) => {
+    if (index === 0) ctx.moveTo(x(0), y(value));
+    else ctx.lineTo(x(index), y(value));
+  });
+  ctx.lineTo(x(prices.length - 1), height - padding.bottom);
+  ctx.lineTo(x(0), height - padding.bottom);
+  ctx.closePath();
+  ctx.fillStyle = areaGrad;
+  ctx.fill();
+
+  // 이동평균선 (선택된 기간)
+  [...maState]
+    .sort((a, b) => a - b)
+    .forEach((period) => {
+      const series = simpleMovingAverage(prices, period);
+      ctx.beginPath();
+      let started = false;
+      series.forEach((value, index) => {
+        if (value == null) return;
+        const px = x(index);
+        const py = y(value);
+        if (!started) {
+          ctx.moveTo(px, py);
+          started = true;
+        } else ctx.lineTo(px, py);
+      });
+      ctx.strokeStyle = MA_COLORS[period] || "#8a94a6";
+      ctx.lineWidth = 1.6;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
+    });
+
+  drawLine(prices, 0, getThemeColor("--ink"), 2.6);
   drawLine([last, ...projected], prices.length - 1, getThemeColor("--accent"), 3);
 
   ctx.fillStyle = getThemeColor("--ink");
@@ -6695,6 +6747,17 @@ document.querySelector("#refreshBtn").addEventListener("click", () => {
   render();
   fetchMarketIndices();
   refreshTrackedMarketData({ includeMissingHistory: true });
+});
+
+// 이동평균선 토글
+document.querySelector("#maToggleGroup")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-ma]");
+  if (!button) return;
+  const period = Number(button.dataset.ma);
+  if (maState.has(period)) maState.delete(period);
+  else maState.add(period);
+  button.classList.toggle("active", maState.has(period));
+  render();
 });
 
 // 🆕 모니터링 시작/중지(및 알림 권한·삭제) 버튼 리스너를 앱 시작 시 1회 등록한다.

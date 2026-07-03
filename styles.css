@@ -3347,3 +3347,39 @@ details[open] .detail-toggle {
     font-size: 11px;
   }
 }
+
+/* 이동평균선 토글 */
+.ma-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.ma-toggle-label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.ma-toggle {
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border: 1px solid var(--border, rgba(140,150,170,0.35));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ma-toggle:hover { border-color: var(--accent); color: var(--ink); }
+.ma-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.ma-toggle[data-ma="5"].active { background: #f59e0b; border-color: #f59e0b; }
+.ma-toggle[data-ma="20"].active { background: #3b82f6; border-color: #3b82f6; }
+.ma-toggle[data-ma="60"].active { background: #a855f7; border-color: #a855f7; }
+.ma-toggle[data-ma="120"].active { background: #10b981; border-color: #10b981; }
+.ma-toggle[data-ma="1"].active { background: #8a94a6; border-color: #8a94a6; }
