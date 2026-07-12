@@ -1647,6 +1647,261 @@ function renderForcedSellRisk(ticker) {
   elements.forcedSellCopy.textContent = risk.copy;
 }
 
+// ═══════════════ 🧾 펀더멘털 안전판 ═══════════════
+const fundamentalCache = new Map();
+async function fetchFundamental(ticker) {
+  if (fundamentalCache.has(ticker)) return fundamentalCache.get(ticker);
+  try {
+    const response = await fetchApi(`/api/fundamental?symbol=${encodeURIComponent(ticker)}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    const data = await response.json();
+    fundamentalCache.set(ticker, data);
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+async function renderFundamental(ticker) {
+  const badge = document.querySelector("#fundamentalBadge");
+  const rows = document.querySelector("#fundamentalRows");
+  const copy = document.querySelector("#fundamentalCopy");
+  if (!badge) return;
+  badge.textContent = "…";
+  badge.style.color = "";
+  rows.innerHTML = "";
+  const data = await fetchFundamental(ticker);
+  // 비동기 응답 시점에 종목이 바뀌었으면 무시
+  if (elements.ticker.value !== ticker) return;
+  if (!data || data.error) {
+    badge.textContent = "조회 실패";
+    copy.textContent = "펀더멘털 데이터를 가져오지 못했습니다.";
+    return;
+  }
+  if (data.supported === false) {
+    badge.textContent = "해외 미제공";
+    copy.textContent = "해외 종목은 네이버가 펀더멘털을 제공하지 않습니다. 기술적 지표 중심으로 판단하세요.";
+    return;
+  }
+  const quote = getLiveQuote(ticker);
+  const price = quote?.price || null;
+  const pos52 = price && data.high52 && data.low52 && data.high52 > data.low52
+    ? ((price - data.low52) / (data.high52 - data.low52)) * 100
+    : null;
+  const items = [
+    ["PER", data.per != null ? `${data.per.toFixed(1)}배` : "-"],
+    ["EPS", data.eps != null ? `${formatNumber(data.eps)}원` : "-"],
+    ["PBR", data.pbr != null ? `${data.pbr.toFixed(2)}배` : "-"],
+    ["배당수익률", data.dividendYield != null ? `${data.dividendYield.toFixed(2)}%` : "-"],
+    ["외국인 비율", data.foreignRate != null ? `${data.foreignRate.toFixed(1)}%` : "-"],
+    ["52주 위치", pos52 != null ? `${pos52.toFixed(0)}%` : "-"],
+  ];
+  rows.innerHTML = items.map(([k, v]) => `<div><span style="color:var(--muted);">${k}</span> <strong style="float:right;">${v}</strong></div>`).join("");
+
+  // 안전판 판정
+  const warnings = [];
+  if (data.eps != null && data.eps < 0) warnings.push("⚠️ 적자 기업(EPS<0) — 신용·테마성 급등락 주의");
+  if (data.per != null && data.per > 60) warnings.push("⚠️ PER 60배 초과 — 고평가 부담, 조정 시 낙폭 클 수 있음");
+  if (pos52 != null && pos52 < 15) warnings.push("📉 52주 저점권 — 하락 추세 지속 여부 확인 필요");
+  if (pos52 != null && pos52 > 90) warnings.push("📈 52주 고점권 — 차익실현 물량 경계");
+  const positives = [];
+  if (data.per != null && data.per > 0 && data.per < 12) positives.push("저평가권 PER");
+  if (data.dividendYield != null && data.dividendYield >= 3) positives.push("배당 방어력");
+  if (data.foreignRate != null && data.foreignRate >= 30) positives.push("외국인 비중 안정");
+
+  if (warnings.length) {
+    badge.textContent = "주의 필요";
+    badge.style.color = "#f59e0b";
+  } else {
+    badge.textContent = "기초체력 양호";
+    badge.style.color = "#10b981";
+  }
+  copy.textContent = [...warnings, positives.length ? `✓ 긍정 요인: ${positives.join(", ")}` : ""].filter(Boolean).join(" · ") ||
+    "특이 경고 없음 — 기술적 신호의 신뢰도를 뒷받침합니다.";
+}
+
+// ═══════════════ 📊 장기 백테스트 (단테 눌림목 전략) ═══════════════
+async function fetchLongHistory(ticker, range = "2y") {
+  const response = await fetchApi(`/api/history?symbol=${encodeURIComponent(ticker)}&range=${range}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`히스토리 HTTP ${response.status}`);
+  const payload = await response.json();
+  if (!Array.isArray(payload.ohlcv) || payload.ohlcv.length < 100) throw new Error("장기 데이터 부족");
+  return payload.ohlcv;
+}
+
+function runDanteBacktest(rows) {
+  const closes = rows.map((r) => r.close);
+  const sma = (idx, n) => {
+    if (idx + 1 < n) return null;
+    let s = 0;
+    for (let i = idx - n + 1; i <= idx; i += 1) s += closes[i];
+    return s / n;
+  };
+  const trades = [];
+  let position = null;
+  let equity = 1;
+  let peak = 1;
+  let mdd = 0;
+  for (let i = 21; i < rows.length; i += 1) {
+    const close = closes[i];
+    if (position) {
+      const ret = (close - position.entry) / position.entry;
+      const holdDays = i - position.entryIdx;
+      let exit = null;
+      if (ret >= 0.06) exit = "익절 +6%";
+      else if (ret <= -0.03) exit = "손절 -3%";
+      else if (holdDays >= 15) exit = "시간청산";
+      if (exit) {
+        trades.push({ entryDate: rows[position.entryIdx].date, exitDate: rows[i].date, ret, exit });
+        equity *= 1 + ret;
+        peak = Math.max(peak, equity);
+        mdd = Math.max(mdd, (peak - equity) / peak);
+        position = null;
+      }
+      continue;
+    }
+    // 진입 조건: 20일선 기울기 상승(추세 유지) + 고점대비 3~8% 눌림 + 당일 반등(전일 대비 상승)
+    const sma20 = sma(i, 20);
+    const sma20Prev = sma(i - 5, 20);
+    if (!sma20 || !sma20Prev) continue;
+    const high20 = Math.max(...closes.slice(i - 19, i + 1));
+    const pullback = (high20 - close) / high20;
+    if (sma20 > sma20Prev && pullback >= 0.03 && pullback <= 0.08 && close > closes[i - 1]) {
+      position = { entry: close, entryIdx: i };
+    }
+  }
+  const wins = trades.filter((t) => t.ret > 0);
+  const buyHold = (closes.at(-1) - closes[21]) / closes[21];
+  return {
+    trades,
+    winRate: trades.length ? (wins.length / trades.length) * 100 : 0,
+    avgReturn: trades.length ? (trades.reduce((s, t) => s + t.ret, 0) / trades.length) * 100 : 0,
+    totalReturn: (equity - 1) * 100,
+    mdd: mdd * 100,
+    buyHold: buyHold * 100,
+    period: `${rows[21]?.date} ~ ${rows.at(-1)?.date}`,
+  };
+}
+
+async function runBacktestUI() {
+  const btn = document.querySelector("#backtestRunBtn");
+  const out = document.querySelector("#backtestResult");
+  const ticker = elements.ticker.value;
+  if (!ticker) { out.innerHTML = `<span style="color:#ef4444;">종목을 먼저 선택하세요.</span>`; return; }
+  btn.disabled = true;
+  btn.textContent = "실행 중…";
+  out.innerHTML = `<span style="color:var(--muted);">2년 일봉 데이터를 불러와 시뮬레이션 중…</span>`;
+  try {
+    const rows = await fetchLongHistory(ticker, "2y");
+    const r = runDanteBacktest(rows);
+    const verdict =
+      r.trades.length < 5
+        ? "표본이 적어 통계적 의미가 제한적입니다."
+        : r.winRate >= 55 && r.totalReturn > 0
+          ? "이 종목에서 전략이 유효하게 작동했습니다."
+          : r.totalReturn > r.buyHold
+            ? "절대 수익률은 낮지만 단순 보유보다 나은 성과였습니다."
+            : "이 종목에선 전략 성과가 단순 보유보다 못했습니다 — 신호를 보수적으로 해석하세요.";
+    const color = r.totalReturn >= 0 ? "#10b981" : "#ef4444";
+    out.innerHTML = `
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:12px;">
+        <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;"><div style="font-size:0.8em; color:var(--muted);">거래 횟수</div><strong style="font-size:1.3em;">${r.trades.length}회</strong></div>
+        <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;"><div style="font-size:0.8em; color:var(--muted);">실측 승률</div><strong style="font-size:1.3em;">${r.winRate.toFixed(1)}%</strong></div>
+        <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;"><div style="font-size:0.8em; color:var(--muted);">전략 누적수익</div><strong style="font-size:1.3em; color:${color};">${r.totalReturn >= 0 ? "+" : ""}${r.totalReturn.toFixed(1)}%</strong></div>
+        <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;"><div style="font-size:0.8em; color:var(--muted);">단순보유 수익</div><strong style="font-size:1.3em;">${r.buyHold >= 0 ? "+" : ""}${r.buyHold.toFixed(1)}%</strong></div>
+        <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;"><div style="font-size:0.8em; color:var(--muted);">최대 낙폭(MDD)</div><strong style="font-size:1.3em;">-${r.mdd.toFixed(1)}%</strong></div>
+        <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;"><div style="font-size:0.8em; color:var(--muted);">평균 거래손익</div><strong style="font-size:1.3em;">${r.avgReturn >= 0 ? "+" : ""}${r.avgReturn.toFixed(2)}%</strong></div>
+      </div>
+      <p style="margin:0 0 8px;"><strong>해석:</strong> ${verdict}</p>
+      <p style="margin:0; font-size:0.8em; color:var(--muted);">기간 ${r.period} · 과거 성과는 미래 수익을 보장하지 않습니다. 수수료·슬리피지 미반영.</p>`;
+  } catch (error) {
+    out.innerHTML = `<span style="color:#ef4444;">백테스트 실패: ${error.message} (배포 환경에서 실행해야 API 접근이 가능합니다)</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "▶ 백테스트 실행";
+  }
+}
+document.querySelector("#backtestRunBtn")?.addEventListener("click", runBacktestUI);
+
+// ═══════════════ 📈 신호 성과 자동 추적 ═══════════════
+const SIGNAL_HISTORY_KEY = "bok-signal-history-v1";
+
+function loadSignalHistory() {
+  try { return JSON.parse(localStorage.getItem(SIGNAL_HISTORY_KEY)) || []; } catch { return []; }
+}
+
+function recordSignalSnapshot(market, results) {
+  const today = new Date().toISOString().slice(0, 10);
+  const history = loadSignalHistory().filter((h) => !(h.date === today && h.market === market));
+  history.push({
+    date: today,
+    market,
+    signals: results.slice(0, 10).map((r) => ({ ticker: r.ticker, name: r.name || r.ticker, price: r.currentPrice, score: r.totalScore })),
+  });
+  // 최근 30회 스캔만 보관
+  localStorage.setItem(SIGNAL_HISTORY_KEY, JSON.stringify(history.slice(-30)));
+}
+
+async function evaluateSignalPerformance() {
+  const btn = document.querySelector("#signalPerfBtn");
+  const summary = document.querySelector("#signalPerfSummary");
+  const body = document.querySelector("#signalPerfBody");
+  const history = loadSignalHistory();
+  const today = new Date().toISOString().slice(0, 10);
+  const past = history.filter((h) => h.date < today);
+  if (!past.length) {
+    summary.textContent = history.length
+      ? "오늘 기록된 신호뿐입니다. 하루 이상 지난 뒤 평가하면 실측 수익률이 계산됩니다."
+      : "기록된 신호가 없습니다. 종목신호기에서 '분석 시작'을 실행하면 자동 기록됩니다.";
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "평가 중…";
+  try {
+    // 평가 대상: 과거 신호 (최근 60건 한도)
+    const entries = past.flatMap((h) => h.signals.map((s) => ({ ...s, date: h.date, market: h.market }))).slice(-60);
+    const tickers = [...new Set(entries.map((e) => e.ticker))];
+    const priceMap = {};
+    await runWithConcurrency(tickers, 5, async (ticker) => {
+      try {
+        const response = await fetchApi(`/api/quote?symbol=${encodeURIComponent(ticker)}`, { cache: "no-store" });
+        if (response.ok) {
+          const q = await response.json();
+          if (q?.price) priceMap[ticker] = q.price;
+        }
+      } catch { /* 개별 실패 허용 */ }
+    });
+    const evaluated = entries
+      .filter((e) => e.price && priceMap[e.ticker])
+      .map((e) => ({ ...e, now: priceMap[e.ticker], ret: (priceMap[e.ticker] - e.price) / e.price }));
+    if (!evaluated.length) {
+      summary.textContent = "현재가 조회에 실패해 평가할 수 없습니다. 잠시 후 다시 시도하세요.";
+      return;
+    }
+    const wins = evaluated.filter((e) => e.ret > 0);
+    const avg = evaluated.reduce((s, e) => s + e.ret, 0) / evaluated.length;
+    const winRate = (wins.length / evaluated.length) * 100;
+    summary.innerHTML = `📊 <strong>실측 승률 ${winRate.toFixed(1)}%</strong> (${evaluated.length}건 중 ${wins.length}건 수익) · 평균 수익률 <strong style="color:${avg >= 0 ? "#10b981" : "#ef4444"};">${avg >= 0 ? "+" : ""}${(avg * 100).toFixed(2)}%</strong> — 신호일 종가 대비 현재가 기준`;
+    body.innerHTML = evaluated
+      .sort((a, b) => b.date.localeCompare(a.date) || b.ret - a.ret)
+      .slice(0, 30)
+      .map((e) => `
+        <tr style="border-top:1px solid var(--border);">
+          <td style="padding:8px;">${e.date}</td>
+          <td style="padding:8px;">${e.name} <span style="color:var(--muted); font-size:0.85em;">${e.ticker}</span></td>
+          <td style="padding:8px; text-align:right;">${formatNumber(e.price)}</td>
+          <td style="padding:8px; text-align:right;">${formatNumber(e.now)}</td>
+          <td style="padding:8px; text-align:right; color:${e.ret >= 0 ? "#10b981" : "#ef4444"}; font-weight:600;">${e.ret >= 0 ? "+" : ""}${(e.ret * 100).toFixed(2)}%</td>
+          <td style="padding:8px; text-align:center;">${e.ret > 0.02 ? "🟢 적중" : e.ret < -0.02 ? "🔴 실패" : "🟡 보합"}</td>
+        </tr>`)
+      .join("");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "성과 평가";
+  }
+}
+document.querySelector("#signalPerfBtn")?.addEventListener("click", evaluateSignalPerformance);
+
 function drawChart(prices, projected, volatility, ticker = elements.ticker.value) {
   const ratio = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -6465,6 +6720,7 @@ function render() {
   const performHeavyRender = () => {
     drawChart(prices, result.projected, result.volatility, selectedTicker);
     renderForcedSellRisk(selectedTicker);
+    renderFundamental(selectedTicker);
     updateMarketStrip();
     drawRadar(selectedTicker);
     renderCompanyIntelligence(selectedTicker, result);
@@ -7257,6 +7513,7 @@ async function runSignalScan(market) {
     const results = await enhancedSignalScanner.scanAllSymbols(scanTargets, historyMap);
     results.sort((a, b) => b.totalScore - a.totalScore);
     signalResultsByMarket[market] = results;
+    try { recordSignalSnapshot(market, results); } catch (e) { /* 기록 실패 무시 */ }
 
     renderSignalTable();
     updateSignalStatistics();

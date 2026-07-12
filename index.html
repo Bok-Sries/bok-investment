@@ -367,6 +367,14 @@
               <ul id="forcedSellFactors" style="margin: 0 0 10px; padding-left: 18px; font-size: 0.85em; line-height: 1.6; color: var(--muted);"></ul>
               <p id="forcedSellCopy" style="margin: 0; font-size: 0.85em; line-height: 1.6;">분석 대기 중입니다.</p>
             </div>
+            <div class="fundamental-card" id="fundamentalCard" style="padding: 16px; border: 1px solid var(--border); border-radius: 12px; margin-top: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <span style="font-weight: 700;">🧾 펀더멘털 안전판</span>
+                <strong id="fundamentalBadge" style="font-size: 0.9em;">-</strong>
+              </div>
+              <div id="fundamentalRows" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 0.85em; margin-bottom: 8px;"></div>
+              <p id="fundamentalCopy" style="margin: 0; font-size: 0.82em; line-height: 1.6; color: var(--muted);">국내 종목 선택 시 PER·EPS 등 기초 체력을 점검합니다.</p>
+            </div>
           </aside>
         </section>
 
@@ -1067,6 +1075,21 @@
             <div class="section-actions" id="compareTickerControls" aria-label="비교 종목 선택"></div>
           </div>
 
+          <!-- 🆕 2년 장기 백테스트 -->
+          <article class="tool-panel" style="margin-bottom: 24px;">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Backtest</p>
+                <h2>장기 백테스트 <span style="font-size:0.65em; color:var(--muted);">최근 2년 · 단테 눌림목 전략 시뮬레이션</span></h2>
+              </div>
+              <button id="backtestRunBtn" type="button" style="padding: 10px 20px; background: var(--primary); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; white-space: nowrap;">▶ 백테스트 실행</button>
+            </div>
+            <p style="margin: 0 0 12px; font-size: 0.85em; color: var(--muted);">선택 종목의 2년 일봉으로 "20일선 위 + 고점대비 3~8% 눌림 매수 → +6% 익절 / -3% 손절 / 15일 시간청산" 전략을 검증합니다.</p>
+            <div id="backtestResult" style="font-size: 0.92em; line-height: 1.7;">
+              <span style="color: var(--muted);">아직 실행 전입니다.</span>
+            </div>
+          </article>
+
           <div class="model-grid">
             <article class="chart-panel">
               <div class="panel-heading compact">
@@ -1561,6 +1584,37 @@
                 <div style="font-size: 0.9em; color: var(--muted); margin-bottom: 8px;">외국인 동반</div>
                 <strong id="foreignSignalCount" style="font-size: 1.8em;">0</strong>
               </div>
+            </div>
+          </article>
+
+          <!-- 🆕 신호 성과 자동 추적 (실측 승률) -->
+          <article class="tool-panel" style="margin-top: 24px;">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Track Record</p>
+                <h2>신호 성과 추적 <span style="font-size:0.65em; color:var(--muted);">과거 신호의 실제 수익률로 시스템 승률 실측</span></h2>
+              </div>
+              <button id="signalPerfBtn" type="button" style="padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; white-space: nowrap;">성과 평가</button>
+            </div>
+            <div id="signalPerfSummary" style="padding: 12px 16px; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 12px; font-weight: 600;">
+              분석 실행 시 상위 신호가 자동 기록됩니다. "성과 평가"를 누르면 기록된 신호의 현재 수익률과 실측 승률을 계산합니다.
+            </div>
+            <div style="overflow-x: auto;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 0.88em;">
+                <thead>
+                  <tr style="border-bottom: 2px solid var(--border);">
+                    <th style="padding: 8px; text-align: left;">신호일</th>
+                    <th style="padding: 8px; text-align: left;">종목</th>
+                    <th style="padding: 8px; text-align: right;">신호가</th>
+                    <th style="padding: 8px; text-align: right;">현재가</th>
+                    <th style="padding: 8px; text-align: right;">수익률</th>
+                    <th style="padding: 8px; text-align: center;">판정</th>
+                  </tr>
+                </thead>
+                <tbody id="signalPerfBody">
+                  <tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--muted);">기록된 신호가 없습니다.</td></tr>
+                </tbody>
+              </table>
             </div>
           </article>
         </section>

@@ -131,12 +131,12 @@ function parseNaverHistory(text) {
   );
 }
 
-async function fetchNaverHistory(symbol) {
+async function fetchNaverHistory(symbol, days = 120) {
   const code = getDomesticCode(symbol);
   if (!code) return null;
   const end = getKoreaDate();
   const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 120);
+  start.setUTCDate(start.getUTCDate() - days);
   const url = `https://api.finance.naver.com/siseJson.naver?symbol=${encodeURIComponent(code)}&requestType=1&startTime=${formatCompactDate(
     start,
   )}&endTime=${formatCompactDate(end)}&timeframe=day`;
@@ -158,12 +158,12 @@ async function fetchNaverHistory(symbol) {
 }
 
 // 네이버 해외주식 일봉 (나스닥 .O / NYSE .N 순차 시도). Yahoo 대체용.
-async function fetchNaverWorldHistory(symbol) {
+async function fetchNaverWorldHistory(symbol, days = 120) {
   if (isDomesticSymbol(symbol)) return null;
   const bare = symbol.replace(/\.(O|N)$/i, "");
   const end = getKoreaDate();
   const start = new Date(end);
-  start.setMonth(start.getMonth() - 4);
+  start.setUTCDate(start.getUTCDate() - days);
   const startStr = formatCompactDate(start);
   const endStr = formatCompactDate(end);
   for (const suffix of [".O", ".N"]) {
@@ -204,6 +204,9 @@ export default async function handler(request, response) {
 
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const symbol = url.searchParams.get("symbol")?.trim();
+  // range=2y 등 장기 요청 지원 (백테스트용). 기본 120일, 최대 3년.
+  const rangeParam = url.searchParams.get("range") || "";
+  const rangeDays = rangeParam === "2y" ? 740 : rangeParam === "1y" ? 370 : rangeParam === "3y" ? 1110 : 120;
 
   // 파라미터 검증
   if (!symbol) {
@@ -219,7 +222,7 @@ export default async function handler(request, response) {
 
   try {
     if (isDomesticSymbol(symbol)) {
-      const domesticRows = await fetchNaverHistory(symbol);
+      const domesticRows = await fetchNaverHistory(symbol, rangeDays);
       if (domesticRows) {
         response.status(200).json({
           symbol,
@@ -234,7 +237,7 @@ export default async function handler(request, response) {
     }
 
     // 해외 종목: 네이버 해외 일봉 우선 (Yahoo 429·차단 대응)
-    const worldRows = await fetchNaverWorldHistory(symbol);
+    const worldRows = await fetchNaverWorldHistory(symbol, rangeDays);
     if (worldRows) {
       response.status(200).json({
         symbol,
