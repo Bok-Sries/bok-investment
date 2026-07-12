@@ -353,6 +353,20 @@
                 <strong id="confidenceMetric">68%</strong>
               </div>
             </div>
+            <div class="forced-sell-card" id="forcedSellCard" style="padding: 16px; border: 1px solid var(--border); border-radius: 12px; margin-top: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <span style="font-weight: 700;">⚠️ 반대매매 위험도</span>
+                <strong id="forcedSellLevel" style="font-size: 1.05em;">-</strong>
+              </div>
+              <div style="height: 10px; background: var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 6px;">
+                <div id="forcedSellGauge" style="height: 100%; width: 0%; background: #10b981; transition: width .3s ease, background .3s ease;"></div>
+              </div>
+              <div style="display: flex; justify-content: space-between; font-size: 0.75em; color: var(--muted); margin-bottom: 10px;">
+                <span>안전</span><span>주의</span><span>위험</span><span>매우 위험</span>
+              </div>
+              <ul id="forcedSellFactors" style="margin: 0 0 10px; padding-left: 18px; font-size: 0.85em; line-height: 1.6; color: var(--muted);"></ul>
+              <p id="forcedSellCopy" style="margin: 0; font-size: 0.85em; line-height: 1.6;">분석 대기 중입니다.</p>
+            </div>
           </aside>
         </section>
 

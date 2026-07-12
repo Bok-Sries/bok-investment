@@ -300,6 +300,10 @@ const elements = {
   dashboardOpinionCopy: document.querySelector("#dashboardOpinionCopy"),
   returnMetric: document.querySelector("#returnMetric"),
   riskMetric: document.querySelector("#riskMetric"),
+  forcedSellLevel: document.querySelector("#forcedSellLevel"),
+  forcedSellGauge: document.querySelector("#forcedSellGauge"),
+  forcedSellFactors: document.querySelector("#forcedSellFactors"),
+  forcedSellCopy: document.querySelector("#forcedSellCopy"),
   confidenceMetric: document.querySelector("#confidenceMetric"),
   livePrice: document.querySelector("#livePriceValue"),
   livePriceChange: document.querySelector("#livePriceChange"),
@@ -1555,6 +1559,92 @@ async function refreshTrackedMarketData(options = {}) {
     ),
   );
   render();
+}
+
+// ⚠️ 반대매매 위험도: 신용거래 강제청산 압력을 가격·거래량 패턴으로 추정하는 프록시 지표
+// (실제 신용잔고 데이터는 공개 API가 없어, 반대매매의 전형적 흔적 4가지로 추정)
+function calculateForcedSellingRisk(ticker) {
+  const rows = getAnalysisRows(ticker);
+  if (!rows || rows.length < 8) return null;
+  const closes = rows.map((r) => r.close);
+  const last = rows.at(-1);
+  const volWindow = rows.slice(-20);
+
+  // ① 고점 대비 하락폭 — 담보비율(140%) 하회 압력. 20% 이상 하락 시 신용계좌 마진콜 구간
+  const high20 = Math.max(...closes.slice(-20));
+  const dropFromHigh = (high20 - last.close) / high20;
+  const dropScore = Math.min(dropFromHigh / 0.25, 1) * 30;
+
+  // ② 연속 하락일 — 마진콜 후 D+2 미납 시 반대매매 집행. 3일 연속이면 임박 신호
+  let consecDown = 0;
+  for (let i = closes.length - 1; i > 0; i -= 1) {
+    if (closes[i] < closes[i - 1]) consecDown += 1;
+    else break;
+  }
+  const consecScore = Math.min(consecDown / 4, 1) * 25;
+
+  // ③ 하락일 거래량 급증 — 강제 물량 출회 흔적
+  const avgVol = volWindow.reduce((s, r) => s + (r.volume || 0), 0) / volWindow.length || 1;
+  const downDays = rows.slice(-5).filter((r, i, arr) => i > 0 && r.close < arr[i - 1].close);
+  const maxDownVolRatio = downDays.length ? Math.max(...downDays.map((r) => (r.volume || 0) / avgVol)) : 0;
+  const volScore = Math.min(Math.max(maxDownVolRatio - 1, 0) / 1.5, 1) * 20;
+
+  // ④ 갭하락 — 반대매매는 장 시작 동시호가에 시장가 매도되어 시초가 갭다운을 만든다
+  let gapDowns = 0;
+  for (let i = Math.max(1, rows.length - 3); i < rows.length; i += 1) {
+    if (rows[i].open && rows[i - 1].close && rows[i].open < rows[i - 1].close * 0.99) gapDowns += 1;
+  }
+  const gapScore = Math.min(gapDowns / 2, 1) * 15;
+
+  // ⑤ 단기 급락 — 5일 -8% 이상이면 미수·신용 물량 연쇄 청산 가능
+  const ret5 = closes.length >= 6 ? (last.close - closes.at(-6)) / closes.at(-6) : 0;
+  const sharpScore = Math.min(Math.max(-ret5 - 0.03, 0) / 0.08, 1) * 10;
+
+  const score = Math.round(dropScore + consecScore + volScore + gapScore + sharpScore);
+  const level =
+    score < 25
+      ? { label: "낮음 (안전)", color: "#10b981" }
+      : score < 50
+        ? { label: "보통 (주의)", color: "#f59e0b" }
+        : score < 75
+          ? { label: "높음 (위험)", color: "#f97316" }
+          : { label: "매우 높음", color: "#ef4444" };
+
+  const factors = [
+    `고점 대비 하락 ${(dropFromHigh * 100).toFixed(1)}% ${dropFromHigh >= 0.15 ? "⚠️ 담보부족 압력 구간" : "(양호)"}`,
+    `연속 하락 ${consecDown}일 ${consecDown >= 3 ? "⚠️ 마진콜 D+2 반대매매 경계" : "(양호)"}`,
+    `하락일 최대 거래량 ${maxDownVolRatio.toFixed(1)}배 ${maxDownVolRatio >= 1.8 ? "⚠️ 강제 물량 출회 의심" : "(정상)"}`,
+    `최근 3일 갭하락 ${gapDowns}회 ${gapDowns >= 1 ? "⚠️ 시초가 반대매매 물량 흔적" : "(없음)"}`,
+  ];
+
+  const copy =
+    score >= 75
+      ? "반대매매 압력이 매우 높습니다. 신용·미수 물량의 강제 청산이 시초가 투매로 이어져 추가 갭하락을 만들 수 있습니다. 신규 진입을 피하고, 보유 중이라면 반등 시 비중 축소를 검토하세요. 다만 반대매매 물량이 소화된 직후는 단기 바닥이 형성되는 경우도 많아 투매 종료 신호(긴 아래꼬리+거래량 피크)를 관찰할 가치가 있습니다."
+      : score >= 50
+        ? "반대매매 위험이 높아지는 구간입니다. 연속 하락이나 갭하락이 이어지면 신용 물량 청산이 본격화될 수 있습니다. 분할 접근만 유효하며 손절선을 짧게 유지하세요."
+        : score >= 25
+          ? "반대매매 압력은 보통 수준입니다. 고점 대비 하락폭이 더 커지거나 3일 연속 하락이 나오면 위험도가 올라가니 체크포인트로 삼으세요."
+          : "반대매매 압력이 낮은 안정 구간입니다. 신용발 투매 리스크보다는 일반적인 수급·추세 분석에 집중해도 좋습니다.";
+
+  return { score, level, factors, copy, dropFromHigh, consecDown, maxDownVolRatio, gapDowns };
+}
+
+function renderForcedSellRisk(ticker) {
+  if (!elements.forcedSellLevel) return;
+  const risk = calculateForcedSellingRisk(ticker);
+  if (!risk) {
+    elements.forcedSellLevel.textContent = "-";
+    elements.forcedSellGauge.style.width = "0%";
+    elements.forcedSellFactors.innerHTML = "";
+    elements.forcedSellCopy.textContent = "데이터가 부족합니다.";
+    return;
+  }
+  elements.forcedSellLevel.textContent = `${risk.level.label} · ${risk.score}점`;
+  elements.forcedSellLevel.style.color = risk.level.color;
+  elements.forcedSellGauge.style.width = `${risk.score}%`;
+  elements.forcedSellGauge.style.background = risk.level.color;
+  elements.forcedSellFactors.innerHTML = risk.factors.map((f) => `<li>${f}</li>`).join("");
+  elements.forcedSellCopy.textContent = risk.copy;
 }
 
 function drawChart(prices, projected, volatility, ticker = elements.ticker.value) {
@@ -6374,6 +6464,7 @@ function render() {
   // 🚀 초기 로드 최적화: 무거운 작업들을 requestIdleCallback으로 지연
   const performHeavyRender = () => {
     drawChart(prices, result.projected, result.volatility, selectedTicker);
+    renderForcedSellRisk(selectedTicker);
     updateMarketStrip();
     drawRadar(selectedTicker);
     renderCompanyIntelligence(selectedTicker, result);
