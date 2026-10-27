@@ -1,308 +1,64 @@
-const FETCH_TIMEOUT_MS = 8000;
+import { domestic, number, dateKey, context, request, attempt, rowsValid, alphaHistory } from "../lib/market-data.js";
 
-function formatDate(timestamp) {
-  return new Date(timestamp * 1000).toISOString().slice(0, 10);
-}
-
-// 타임아웃이 있는 fetch 래퍼
-function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
-  return Promise.race([
-    fetch(url, options),
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Fetch timeout")), timeoutMs)
-    ),
-  ]);
-}
-
-function formatCompactDate(value) {
-  return value.toISOString().slice(0, 10).replace(/-/g, "");
-}
-
-function getKoreaDate(value = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  })
-    .formatToParts(value)
-    .reduce((acc, part) => {
-      if (part.type !== "literal") acc[part.type] = part.value;
-      return acc;
-    }, {});
-  return new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), 12));
-}
-
-function isDomesticSymbol(symbol) {
-  return symbol?.endsWith(".KS") || symbol?.endsWith(".KQ");
-}
-
-function getDomesticCode(symbol) {
-  return symbol?.replace(/\.(KS|KQ)$/i, "");
-}
-
-function getAlphaSquareCode(symbol) {
-  if (!symbol) return null;
-  return isDomesticSymbol(symbol) ? getDomesticCode(symbol) : symbol;
-}
-
-function decodeHtml(value) {
-  return value
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&nbsp;/g, " ");
-}
-
-function normalizeText(html) {
-  return decodeHtml(
-    html
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, "\n")
-      .replace(/\s+/g, " "),
-  );
-}
-
-function toNumber(value) {
-  if (!value) return null;
-  const parsed = Number(String(value).replace(/[,+%₩$]/g, "").trim());
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseAlphaSquareDate(value) {
-  const [month, day, year] = value.split("/").map(Number);
-  if (!year || !month || !day) return null;
-  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-function parseAlphaSquareHistory(html) {
-  const text = normalizeText(html);
-  if (/페이지를 찾을 수 없습니다|Page Not Found/i.test(text)) return [];
-  return [
-    ...text.matchAll(
-      /(\d{1,2}\/\d{1,2}\/\d{4})\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+)/g,
-    ),
-  ]
-    .map((match) => ({
-      date: parseAlphaSquareDate(match[1]),
-      open: toNumber(match[2]),
-      high: toNumber(match[3]),
-      low: toNumber(match[4]),
-      close: toNumber(match[5]),
-      volume: toNumber(match[6]),
-    }))
-    .filter((row) => row.date && [row.open, row.high, row.low, row.close, row.volume].every(Number.isFinite));
-}
-
-async function fetchAlphaSquareHistory(symbol) {
-  const code = getAlphaSquareCode(symbol);
-  if (!code) return null;
-  const url = `https://alphasquare.co.kr/home/stock-summary?code=${encodeURIComponent(code)}`;
-  try {
-    const response = await fetchWithTimeout(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
-        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
-      },
-    });
-    if (!response.ok) return null;
-    const rows = parseAlphaSquareHistory(await response.text());
-    return rows.length >= 5 ? rows : null;
-  } catch (error) {
-    console.warn(`AlphaSquare history fetch failed for ${symbol}:`, error.message);
-    return null;
-  }
-}
-
-function parseNaverHistory(text) {
-  return [...text.matchAll(/\["(\d{8})",\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/g)].map(
-    (match) => ({
-      date: `${match[1].slice(0, 4)}-${match[1].slice(4, 6)}-${match[1].slice(6, 8)}`,
-      open: Number(match[2]),
-      high: Number(match[3]),
-      low: Number(match[4]),
-      close: Number(match[5]),
-      volume: Number(match[6]),
-    }),
-  );
-}
-
-async function fetchNaverHistory(symbol, days = 120) {
-  const code = getDomesticCode(symbol);
-  if (!code) return null;
-  const end = getKoreaDate();
-  const start = new Date(end);
+export function historyWindow(symbol, days, now = Date.now()) {
+  const end = dateKey(now, domestic(symbol) ? "Asia/Seoul" : "America/New_York");
+  const start = new Date(end + "T00:00:00Z");
   start.setUTCDate(start.getUTCDate() - days);
-  const url = `https://api.finance.naver.com/siseJson.naver?symbol=${encodeURIComponent(code)}&requestType=1&startTime=${formatCompactDate(
-    start,
-  )}&endTime=${formatCompactDate(end)}&timeframe=day`;
-  try {
-    const response = await fetchWithTimeout(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
-        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
-      },
-    });
-    if (!response.ok) return null;
-    const rows = parseNaverHistory(await response.text());
-    return rows.length >= 5 ? rows : null;
-  } catch (error) {
-    console.warn(`Naver history fetch failed for ${symbol}:`, error.message);
-    return null;
-  }
+  return { start: start.toISOString().slice(0, 10), end };
 }
 
-// 네이버 해외주식 일봉 (나스닥 .O / NYSE .N 순차 시도). Yahoo 대체용.
-async function fetchNaverWorldHistory(symbol, days = 120) {
-  if (isDomesticSymbol(symbol)) return null;
-  const bare = symbol.replace(/\.(O|N)$/i, "");
-  const end = getKoreaDate();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - days);
-  const startStr = formatCompactDate(start);
-  const endStr = formatCompactDate(end);
-  for (const suffix of [".O", ".N"]) {
-    try {
-      const reuters = `${bare}${suffix}`;
-      const url = `https://api.stock.naver.com/chart/foreign/item/${encodeURIComponent(reuters)}/day?startDateTime=${startStr}&endDateTime=${endStr}`;
-      const response = await fetchWithTimeout(url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
-          Accept: "application/json,text/plain,*/*",
-        },
-      });
-      if (!response.ok) continue;
-      const arr = await response.json();
-      if (!Array.isArray(arr)) continue;
-      const rows = arr
-        .map((row) => ({
-          date: String(row.localDate).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3"),
-          open: Number(row.openPrice),
-          high: Number(row.highPrice),
-          low: Number(row.lowPrice),
-          close: Number(row.closePrice),
-          volume: Number(row.accumulatedTradingVolume || 0),
-        }))
-        .filter((row) => Number.isFinite(row.close));
-      if (rows.length >= 5) return rows;
-    } catch {
-      // 다음 접미사 시도
-    }
+export function filterHistory(rows, window) {
+  return rowsValid(rows || []).filter(row => row.date >= window.start && row.date <= window.end);
+}
+
+async function naverHistory(symbol,window,ctx) {
+  const { start, end } = window;
+  const compact=d=>d.replaceAll("-","");
+  if (domestic(symbol)) {
+    const text=await request(`https://api.finance.naver.com/siseJson.naver?symbol=${symbol.slice(0,-3)}&requestType=1&startTime=${compact(start)}&endTime=${compact(end)}&timeframe=day`,ctx,"text");
+    return rowsValid([...text.matchAll(/\["(\d{8})",\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/g)].map(m=>({
+      date:`${m[1].slice(0,4)}-${m[1].slice(4,6)}-${m[1].slice(6,8)}`,
+      open:number(m[2]),high:number(m[3]),low:number(m[4]),close:number(m[5]),volume:number(m[6])
+    })));
+  }
+  if (!/^[A-Z]+(?:-[A-Z])?$/.test(symbol)) return null;
+  for (const suffix of [".O",".N"]) {
+    const rows=await attempt(ctx,"Naver history"+suffix,async()=>{
+      const data=await request(`https://api.stock.naver.com/chart/foreign/item/${encodeURIComponent(symbol+suffix)}/day?startDateTime=${compact(start)}&endDateTime=${compact(end)}`,ctx);
+      if (!Array.isArray(data)) return null;
+      const parsed=rowsValid(data.map(r=>({date:String(r.localDate).replace(/^(\d{4})(\d{2})(\d{2})$/,"$1-$2-$3"),open:number(r.openPrice),high:number(r.highPrice),low:number(r.lowPrice),close:number(r.closePrice),volume:number(r.accumulatedTradingVolume)})));
+      return parsed.length>=5 ? parsed : null;
+    });
+    if (rows) return rows;
   }
   return null;
 }
-
-export default async function handler(request, response) {
-  response.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=300");
-  response.setHeader("Access-Control-Allow-Origin", "*");
-
-  const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
-  const symbol = url.searchParams.get("symbol")?.trim();
-  // range=2y 등 장기 요청 지원 (백테스트용). 기본 120일, 최대 3년.
-  const rangeParam = url.searchParams.get("range") || "";
-  const rangeDays = rangeParam === "2y" ? 740 : rangeParam === "1y" ? 370 : rangeParam === "3y" ? 1110 : 120;
-
-  // 파라미터 검증
-  if (!symbol) {
-    response.status(400).json({ error: "Missing or invalid symbol" });
-    return;
+export default async function handler(req,res) {
+  res.setHeader("Cache-Control","no-store");
+  res.setHeader("Access-Control-Allow-Origin","*");
+  const url=new URL(req.url,`http://${req.headers.host || "localhost"}`);
+  const symbol=url.searchParams.get("symbol")?.trim().toUpperCase();
+  if (!symbol || !/^[A-Z0-9.-]{1,30}$/.test(symbol)) return res.status(400).json({error:"Invalid symbol"});
+  const range=url.searchParams.get("range") || "3mo";
+  const days=({"1y":370,"2y":740,"3y":1110})[range] || 120;
+  const window=historyWindow(symbol,days);
+  const ctx=context();
+  const providers=[
+    ["Naver 일봉",()=>naverHistory(symbol,window,ctx)],
+    ["AlphaSquare 일봉",()=>alphaHistory(symbol,ctx,days+1)],
+    ["Yahoo Finance 일봉",async()=>{
+      // Pad UTC boundaries, then filter by each candle's exchange-local date.
+      const period1=Date.parse(window.start+"T00:00:00Z")/1000-86400;
+      const period2=Date.parse(window.end+"T00:00:00Z")/1000+2*86400;
+      const data=await request(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?period1=${period1}&period2=${period2}&interval=1d`,ctx);
+      const row=data.chart?.result?.[0];
+      const q=row?.indicators?.quote?.[0] || {};
+      return rowsValid((row?.timestamp || []).map((t,i)=>({date:dateKey(t*1000,row.meta.exchangeTimezoneName),open:number(q.open?.[i]),high:number(q.high?.[i]),low:number(q.low?.[i]),close:number(q.close?.[i]),volume:number(q.volume?.[i])})));
+    }]
+  ];
+  for (const [source,fetchRows] of providers) {
+    const rows=await attempt(ctx,source,async()=>{ const r=filterHistory(await fetchRows(),window); return r.length>=5 ? r : null; });
+    if (rows) return res.status(200).json({symbol,prices:rows.map(r=>r.close),dates:rows.map(r=>r.date),ohlcv:rows,source,fetchedAt:new Date().toISOString(),failures:ctx.errors});
   }
-
-  // 기호 검증 (alphanumeric, 점, 대시만 허용)
-  if (!/^[A-Za-z0-9\.\-]+$/.test(symbol)) {
-    response.status(400).json({ error: "Invalid symbol format" });
-    return;
-  }
-
-  try {
-    if (isDomesticSymbol(symbol)) {
-      const domesticRows = await fetchNaverHistory(symbol, rangeDays);
-      if (domesticRows) {
-        response.status(200).json({
-          symbol,
-          prices: domesticRows.map((row) => row.close),
-          dates: domesticRows.map((row) => row.date),
-          ohlcv: domesticRows,
-          source: "Naver Finance 일봉",
-          fetchedAt: new Date().toISOString(),
-        });
-        return;
-      }
-    }
-
-    // 해외 종목: 네이버 해외 일봉 우선 (Yahoo 429·차단 대응)
-    const worldRows = await fetchNaverWorldHistory(symbol, rangeDays);
-    if (worldRows) {
-      response.status(200).json({
-        symbol,
-        prices: worldRows.map((row) => row.close),
-        dates: worldRows.map((row) => row.date),
-        ohlcv: worldRows,
-        source: "Naver 해외 일봉",
-        fetchedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    const endpoint = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=3mo&interval=1d`;
-    const yahooResponse = await fetchWithTimeout(endpoint, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
-        Accept: "application/json",
-      },
-    });
-    if (!yahooResponse.ok) throw new Error(`HTTP ${yahooResponse.status}`);
-
-    const payload = await yahooResponse.json();
-    const result = payload?.chart?.result?.[0];
-    const timestamps = result?.timestamp || [];
-    const quote = result?.indicators?.quote?.[0] || {};
-    const closes = quote.close || [];
-    const rows = timestamps
-      .map((timestamp, index) => ({
-        date: formatDate(timestamp),
-        open: quote.open?.[index],
-        high: quote.high?.[index],
-        low: quote.low?.[index],
-        close: closes[index],
-        volume: quote.volume?.[index],
-      }))
-      .filter((row) => Number.isFinite(row.close));
-
-    if (rows.length < 5) throw new Error("Not enough history");
-
-    response.status(200).json({
-      symbol,
-      prices: rows.map((row) => row.close),
-      dates: rows.map((row) => row.date),
-      ohlcv: rows,
-      source: "Yahoo Finance 지연",
-      fetchedAt: new Date().toISOString(),
-    });
-  } catch {
-    try {
-      const alphaRows = await fetchAlphaSquareHistory(symbol);
-      if (alphaRows) {
-        response.status(200).json({
-          symbol,
-          prices: alphaRows.map((row) => row.close),
-          dates: alphaRows.map((row) => row.date),
-          ohlcv: alphaRows,
-          source: "AlphaSquare 공개 페이지 fallback",
-          fetchedAt: new Date().toISOString(),
-        });
-        return;
-      }
-    } catch {
-      // Public-page fallback failed.
-    }
-    response.status(404).json({ error: "History not found", symbol });
-  }
+  return res.status(503).json({symbol,error:"일봉을 가져오지 못했습니다",code:"HISTORY_UNAVAILABLE",failures:ctx.errors});
 }

@@ -154,6 +154,8 @@ const newsCoMentionPeerGroups = [
 
 let watchlistSymbols = [];
 const liveQuotes = {};
+const marketDataState = {};
+const historyFetchedAt = {};
 const priceDates = {};
 const ohlcvHistory = {};
 const marketDataRequests = {};
@@ -166,6 +168,7 @@ let staticSymbolCatalog = [];
 let symbolSearchRequestId = 0;
 const symbolMetaRequests = new Set();
 let authMode = "login";
+const isLocalPreview = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 let currentUserId = null;
 // 차트 이동평균선 표시 상태 (기본 5·20일)
 const maState = new Set([5, 20]);
@@ -690,6 +693,12 @@ function loadUserPortfolio() {
 }
 
 function saveUserPortfolio() {
+  if (isLocalPreview) {
+    safeStorageSet(localStore, "bok-local-preview-portfolio", JSON.stringify({
+      watchlist: watchlistSymbols, compareSymbols
+    }));
+    return;
+  }
   if (!currentUserUid) return;
   const watchlist = [...watchlistSymbols];
   const compareSelection = compareSymbols.filter((ticker) => watchlistSymbols.includes(ticker)).slice(0, 5);
@@ -881,8 +890,11 @@ function forecast(prices, options = {}) {
 }
 
 function formatPercent(value) {
+  if (!Number.isFinite(value)) return "-";
+  if (value === 0) return "0.00%";
+  if (Math.abs(value * 100) < 0.005) return value > 0 ? "+<0.01%" : "-<0.01%";
   const sign = value >= 0 ? "+" : "";
-  return `${sign}${(value * 100).toFixed(1)}%`;
+  return `${sign}${(value * 100).toFixed(2)}%`;
 }
 
 function formatPrice(value, ticker = elements.ticker.value) {
@@ -944,26 +956,11 @@ function isMarketOpen(ticker) {
  */
 function getPriceLabel(ticker) {
   const quote = getLiveQuote(ticker);
-  const marketOpen = isMarketOpen(ticker);
-
-  // 1. 라이브 가격이 있고 최근 데이터
-  if (quote?.fetchedAt) {
-    const fetchedTime = new Date(quote.fetchedAt).getTime();
-    const now = Date.now();
-    const isRecentData = now - fetchedTime < 5 * 60 * 1000; // 5분 이내
-
-    if (isRecentData) {
-      return marketOpen ? "현재가" : "종가";
-    }
-  }
-
-  // 2. 시장이 개장 중이지만 라이브 데이터가 없으면
-  if (marketOpen) {
-    return "현재가 대기";
-  }
-
-  // 3. 시장이 폐장했으면
-  return "종가";
+  if (!quote) return "시세 미수신";
+  if (quoteIsStale(ticker)) return "오래된 시세";
+  if (quote.priceKind === "history") return "일봉 기준";
+  if (quote.marketState === "CLOSE") return "정규장 종가";
+  return "정규장 시세";
 }
 
 function formatTime(value) {
@@ -989,15 +986,15 @@ function getLiveQuote(ticker) {
 function getCurrentPrice(ticker) {
   ensureSymbolData(ticker);
   recordDataAccess(ticker);
-  return getLiveQuote(ticker)?.price || samples[ticker].at(-1);
+  const quote = getLiveQuote(ticker);
+  const lastDate = ohlcvHistory[ticker]?.at(-1)?.date;
+  if (lastDate && quote?.tradingDate && quote.tradingDate < lastDate) return ohlcvHistory[ticker].at(-1).close;
+  return quote?.price || ohlcvHistory[ticker]?.at(-1)?.close || null;
 }
 
 function getQuoteChange(ticker) {
-  ensureSymbolData(ticker);
   const quote = getLiveQuote(ticker);
-  if (quote?.changePercent !== null && quote?.changePercent !== undefined) return quote.changePercent;
-  const prices = samples[ticker];
-  return (getCurrentPrice(ticker) - prices.at(-2)) / prices.at(-2);
+  return Number.isFinite(quote?.changePercent) ? quote.changePercent : null;
 }
 
 function isMarketClosedQuote(quote) {
@@ -1085,59 +1082,43 @@ function formatIndexTime(index, displaySource) {
 }
 
 function applyLiveQuote(ticker, payload) {
-  if (!ticker || !Number.isFinite(payload?.price)) return;
-  liveQuotes[ticker] = {
-    ...payload,
-    fetchedAt: payload.fetchedAt || new Date().toISOString(),
-  };
-  if (!samples[ticker]?.length) return;
-  const previousLast = samples[ticker].at(-1);
-  if (!previousLast || Math.abs(payload.price - previousLast) / previousLast >= 0.4) return;
-  samples[ticker] = [...samples[ticker].slice(0, -1), payload.price];
-  const lastOhlcv = ohlcvHistory[ticker]?.at(-1);
-  if (lastOhlcv) {
-    lastOhlcv.close = payload.price;
-    lastOhlcv.high = Math.max(lastOhlcv.high, payload.price);
-    lastOhlcv.low = Math.min(lastOhlcv.low, payload.price);
-  }
+  if (!ticker || payload?.symbol !== ticker || !Number.isFinite(payload.price) || payload.price <= 0) throw new Error("잘못된 시세 응답");
+  const previous = liveQuotes[ticker];
+  const oldTime = Date.parse(previous?.tradedAt || previous?.regularUpdatedAt);
+  const newTime = Date.parse(payload.tradedAt || payload.regularUpdatedAt);
+  if (previous?.tradingDate && payload.tradingDate && payload.tradingDate < previous.tradingDate ||
+      Number.isFinite(oldTime) && Number.isFinite(newTime) && newTime < oldTime) return;
+  liveQuotes[ticker] = { ...payload, receivedAt: Date.now() };
+}
+
+function hasAnalysisHistory(ticker) {
+  return (ohlcvHistory[ticker]?.length || 0) >= 5;
 }
 
 function getAnalysisPrices(ticker) {
-  ensureSymbolData(ticker);
-  const prices = samples[ticker];
-  const quote = getLiveQuote(ticker);
-  if (!quote?.price) return [...prices];
-  const scale = quote.price / prices.at(-1);
-  return prices.map((price) => price * scale);
+  return getAnalysisRows(ticker).map(row => row.close);
 }
 
 function getAnalysisRows(ticker) {
   ensureSymbolData(ticker);
-  const prices = getAnalysisPrices(ticker);
-  const rows = ohlcvHistory[ticker];
-  if (rows?.length >= 8) {
-    const scale = prices.at(-1) / rows.at(-1).close;
-    return rows.map((row, index) => ({
-      date: row.date || priceDates[ticker]?.[index] || sampleDates[index % sampleDates.length],
-      open: row.open * scale,
-      high: row.high * scale,
-      low: row.low * scale,
-      close: row.close * scale,
-      volume: row.volume || 0,
-    }));
+  const history = ohlcvHistory[ticker];
+  if (!history || history.length < 5) return [];
+  const rows = history.map(row => ({ ...row }));
+  const quote = getLiveQuote(ticker);
+  const last = rows.at(-1);
+  if (!quote?.tradingDate || quote.priceKind === "history" || quote.tradingDate < last.date) return rows;
+  if (quote.tradingDate === last.date) {
+    last.close = quote.price;
+    last.high = Math.max(last.high, quote.price, quote.high || 0);
+    last.low = Math.min(last.low, quote.price, quote.low || Infinity);
+    if (Number.isFinite(quote.volume)) last.volume = Math.max(last.volume, quote.volume);
+  } else {
+    const open = quote.open > 0 ? quote.open : quote.price;
+    rows.push({ date: quote.tradingDate, open, high: Math.max(open, quote.price, quote.high || 0),
+      low: Math.min(open, quote.price, quote.low || Infinity), close: quote.price,
+      volume: Number.isFinite(quote.volume) ? quote.volume : 0, partial: true });
   }
-  return prices.map((close, index) => {
-    const previous = prices[index - 1] || close;
-    const spread = Math.max(Math.abs(close - previous), close * 0.008);
-    return {
-      date: priceDates[ticker]?.[index] || sampleDates[index % sampleDates.length],
-      open: previous,
-      high: Math.max(close, previous) + spread * 0.45,
-      low: Math.min(close, previous) - spread * 0.45,
-      close,
-      volume: 100000 + index * 4200,
-    };
-  });
+  return rows.slice(-60);
 }
 
 function getAnalysisVolumes(ticker) {
@@ -1215,24 +1196,25 @@ function getApiOriginLabel() {
 }
 
 function getDataStatusLabel(ticker = elements.ticker.value) {
-  if (ticker && getLiveQuote(ticker)) return `실시간/종가 API 반영 · ${getApiOriginLabel()}`;
-  if (ticker && ohlcvHistory[ticker]?.length) return `히스토리 API 반영 · ${getApiOriginLabel()}`;
-  if (ticker && localFallbackSymbols.has(ticker)) return `로컬 샘플/추정 데이터 · API 확인 필요`;
-  if (apiConnectionState.ok === false) return `API 연결 실패 · 로컬 기준 계산 중`;
-  return `API 대기 · 로컬 기준 계산 중`;
+  const state = marketDataState[ticker] || {};
+  const quote = getLiveQuote(ticker);
+  const parts = [];
+  if (state.quoteError) parts.push("시세 갱신 실패: " + state.quoteError);
+  if (state.historyError) parts.push("일봉 갱신 실패: " + state.historyError);
+  if (quoteIsStale(ticker)) parts.push("오래된 시세 · 거래일 " + (quote?.tradingDate || "미확인"));
+  if (!hasAnalysisHistory(ticker)) parts.push("실제 일봉 미수신 · 분석 보류");
+  if (quote) parts.push(quote.source || "출처 미확인");
+  else parts.push("시세 미수신");
+  return parts.join(" · ");
 }
 
 function updateDataStatusBar(ticker = elements.ticker.value) {
   if (!elements.dataStatusBar) return;
-  const hasApiData = Boolean(ticker && (getLiveQuote(ticker) || ohlcvHistory[ticker]?.length));
-  const message = ticker
-    ? `${getTickerName(ticker)} 데이터 상태: ${getDataStatusLabel(ticker)}`
-    : apiConnectionState.ok === false
-      ? `데이터 상태: API 연결 실패 · 종목 등록과 가격 갱신은 로컬 fallback으로 제한됩니다.`
-      : "데이터 상태: 종목 등록 후 API 연결 상태를 확인합니다.";
-  elements.dataStatusBar.textContent = message;
-  elements.dataStatusBar.classList.toggle("warning", apiConnectionState.ok === false && !hasApiData);
-  elements.dataStatusBar.classList.toggle("live", hasApiData);
+  const state = marketDataState[ticker] || {};
+  const warning = Boolean(state.quoteError || state.historyError || quoteIsStale(ticker) || !ohlcvHistory[ticker]?.length);
+  elements.dataStatusBar.textContent = ticker ? getTickerName(ticker) + " 데이터 상태: " + getDataStatusLabel(ticker) : "종목 등록 후 시세를 확인합니다.";
+  elements.dataStatusBar.classList.toggle("warning", warning);
+  elements.dataStatusBar.classList.toggle("live", Boolean(getLiveQuote(ticker)) && !warning);
 }
 
 async function fetchApi(path, options = {}) {
@@ -1244,7 +1226,7 @@ async function fetchApi(path, options = {}) {
     if (!fetchOptions.signal && typeof AbortController !== "undefined") {
       const controller = new AbortController();
       fetchOptions.signal = controller.signal;
-      timeoutId = window.setTimeout(() => controller.abort(), 7000);
+      timeoutId = window.setTimeout(() => controller.abort(), 20000);
     }
     try {
       const response = await fetch(apiUrl(path, origin), fetchOptions);
@@ -1298,17 +1280,12 @@ function normalizePriceSeries(prices, dates = []) {
 }
 
 function normalizeOhlcvSeries(rows = []) {
-  return rows
-    .map((row) => ({
-      date: row.date,
-      open: Number(row.open),
-      high: Number(row.high),
-      low: Number(row.low),
-      close: Number(row.close),
-      volume: Number(row.volume),
-    }))
-    .filter((row) => [row.open, row.high, row.low, row.close].every(Number.isFinite))
-    .slice(-60);
+  return [...new Map(rows.filter(row =>
+    /^\d{4}-\d{2}-\d{2}$/.test(row.date || "") &&
+    [row.open,row.high,row.low,row.close].every(v => Number.isFinite(v) && v > 0) &&
+    row.high >= Math.max(row.open,row.close,row.low) && row.low <= Math.min(row.open,row.close) &&
+    Number.isFinite(row.volume) && row.volume >= 0
+  ).map(row => [row.date,{...row}])).values()].sort((a,b)=>a.date.localeCompare(b.date)).slice(-60);
 }
 
 function getDefaultBasePrice(ticker) {
@@ -1384,21 +1361,28 @@ function selectTicker(ticker) {
   fetchSymbolMarketData(ticker);
 }
 
+function getQuoteTimingLabel(quote) {
+  if (!quote) return "";
+  if (quote.priceKind === "history") return "일봉 기준 · 실시간 시세 아님";
+  const update = quote.tradedAt || quote.regularUpdatedAt;
+  const label = quote.tradedAt ? "공급자 거래 시각" : "공급자 갱신 시각";
+  const stamp = update ? new Date(update).toLocaleString("ko-KR") : quote.tradingDate || "미확인";
+  const delay = quote.source?.startsWith("Stooq") ? "지연 시세" : "지연 여부 미확인";
+  return label + " " + stamp + " · " + delay;
+}
+
 function updateLivePricePanel(ticker) {
   const quote = getLiveQuote(ticker);
   const change = getQuoteChange(ticker);
-  const priceLabel = getPriceLabel(ticker);
-
-  elements.livePrice.textContent = formatPrice(getCurrentPrice(ticker), ticker);
-  elements.livePriceChange.textContent = quote ? formatPercent(change) : `${priceLabel} 기준`;
-  elements.livePriceChange.className = change >= 0 ? "positive" : "negative";
-  elements.livePriceSource.textContent = priceLabel;
-  elements.livePriceSource.title = priceLabel;
+  elements.livePrice.textContent = quote || ohlcvHistory[ticker]?.length ? formatPrice(getCurrentPrice(ticker),ticker) : "-";
+  elements.livePriceChange.textContent = formatPercent(change);
+  elements.livePriceChange.className = Number.isFinite(change) ? (change >= 0 ? "positive" : "negative") : "";
+  elements.livePriceSource.textContent = getPriceLabel(ticker);
+  elements.livePriceSource.title = quote?.source || "";
+  const extended = quote?.extended;
   elements.livePriceUpdated.textContent = quote
-    ? `${priceLabel} 갱신 ${formatTime(quote.fetchedAt)} · ${getApiOriginLabel()}`
-    : apiConnectionState.ok === false
-      ? `API 연결 실패 · ${priceLabel} 기준`
-      : `API 대기 · ${priceLabel} 기준`;
+    ? getQuoteTimingLabel(quote) + (extended ? " · 시간외 " + formatPrice(extended.price,ticker) + " (" + formatPercent(extended.changePercent) + ", 정규장 대비) · " + (extended.tradedAt ? new Date(extended.tradedAt).toLocaleString("ko-KR") : "시각 미확인") : "")
+    : "시세 수신 대기";
 }
 
 function renderTickerOptions(preferredTicker = elements.ticker.value) {
@@ -1437,108 +1421,81 @@ function renderTickerOptions(preferredTicker = elements.ticker.value) {
   document.body.classList.toggle("no-symbols", symbols.length === 0);
 }
 
-async function fetchCurrentQuote(ticker = elements.ticker.value) {
-  try {
-    // 🆕 로컬 환경(localhost)에서는 API 호출 스킵 (404 에러 방지)
-    const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-    if (isLocalhost) {
-      throw new Error("로컬 환경: API 미사용, 샘플 데이터 사용");
-    }
-
-    const response = await fetchApi(`/api/quote?symbol=${encodeURIComponent(ticker)}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (!Number.isFinite(payload.price)) throw new Error("Invalid quote");
-    applyLiveQuote(ticker, payload);
-  } catch {
-    if (!liveQuotes[ticker]) delete liveQuotes[ticker];
-  } finally {
-    render();
+async function readMarketPayload(path) {
+  const response = await fetchApi(path, { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) {
+    const codes = [...new Set((payload.failures || []).map(f => f.code))].join(", ");
+    throw new Error((payload.error || "조회 실패") + (codes ? " (" + codes + ")" : " HTTP " + response.status));
   }
+  return payload;
+}
+
+function quoteIsStale(ticker) {
+  const q = liveQuotes[ticker];
+  if (!q) return false;
+  if (!q.receivedAt || Date.now() - q.receivedAt > 3 * 60000) return true;
+  if (!q.tradingDate) return true;
+  const age = Date.now() - Date.parse(q.tradingDate + "T00:00:00Z");
+  if (!Number.isFinite(age) || age > 4 * 86400000 || age < -86400000) return true;
+  // Weekends/overnight closes are not a failed refresh; an open session needs a recent trade.
+  if (q.marketState !== "OPEN") return false;
+  const updated = Date.parse(q.tradedAt || q.regularUpdatedAt || "");
+  const elapsed = Date.now() - updated;
+  return !Number.isFinite(updated) || elapsed > 20 * 60000 || elapsed < -60000;
+}
+
+async function fetchCurrentQuote(ticker = elements.ticker.value) {
+  const state = marketDataState[ticker] ||= {};
+  try {
+    const payload = await readMarketPayload("/api/quote?symbol=" + encodeURIComponent(ticker));
+    applyLiveQuote(ticker,payload);
+    state.quoteError = "";
+  } catch (error) { state.quoteError = error.message; }
+  finally { render(); }
 }
 
 async function fetchPriceHistory(ticker) {
-  // 🆕 로컬 환경(localhost)에서는 API 호출 스킵 (404 에러 방지)
-  const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-  if (isLocalhost) {
-    throw new Error("로컬 환경: API 미사용, 샘플 데이터 사용");
-  }
-
-  const response = await fetchApi(`/api/history?symbol=${encodeURIComponent(ticker)}`, { cache: "no-store" });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const payload = await response.json();
-  const series = normalizePriceSeries(payload.prices || [], payload.dates || []);
-  if (series.prices.length < 5) throw new Error("Invalid history");
-  const ohlcv = normalizeOhlcvSeries(payload.ohlcv || []);
-  samples[ticker] = series.prices;
+  const payload = await readMarketPayload("/api/history?symbol=" + encodeURIComponent(ticker));
+  if (payload.symbol !== ticker) throw new Error("일봉 종목 불일치");
+  const rows = normalizeOhlcvSeries(payload.ohlcv || []);
+  if (rows.length < 5) throw new Error("유효한 일봉 부족");
+  ohlcvHistory[ticker] = rows;
+  samples[ticker] = rows.map(row => row.close);
+  priceDates[ticker] = rows.map(row => row.date);
+  historyFetchedAt[ticker] = Date.now();
   localFallbackSymbols.delete(ticker);
-  priceDates[ticker] = series.dates;
-  if (ohlcv.length === series.prices.length) ohlcvHistory[ticker] = ohlcv;
-  const existingQuote = liveQuotes[ticker];
-  const shouldUseHistoryQuote = !existingQuote || existingQuote.source?.includes("종가") || existingQuote.source?.includes("일봉");
-  if (shouldUseHistoryQuote && Number.isFinite(series.prices.at(-1))) {
-    liveQuotes[ticker] = {
-      symbol: ticker,
-      price: series.prices.at(-1),
-      change: series.prices.length > 1 ? series.prices.at(-1) - series.prices.at(-2) : null,
-      changePercent: series.prices.length > 1 ? (series.prices.at(-1) - series.prices.at(-2)) / series.prices.at(-2) : null,
-      quote: ticker,
-      source: payload.source || "실시간 지연",
-      fetchedAt: payload.fetchedAt || new Date().toISOString(),
-    };
+  const existing = liveQuotes[ticker];
+  if (!existing || existing.priceKind === "history" || existing.tradingDate < rows.at(-1).date) {
+    const last = rows.at(-1), previous = rows.at(-2);
+    liveQuotes[ticker] = { symbol:ticker, price:last.close, change:last.close-previous.close,
+      changePercent:(last.close-previous.close)/previous.close, tradingDate:last.date,
+      tradedAt:null, priceKind:"history", source:payload.source, fetchedAt:payload.fetchedAt, receivedAt:Date.now() };
   }
 }
 
 async function fetchSymbolMarketData(ticker = elements.ticker.value, options = {}) {
   if (!ticker) return;
   ensureSymbolData(ticker);
-  const renderAfter = options.renderAfter ?? true;
-  const loadHistory = options.history ?? true;
   if (marketDataRequests[ticker]) return marketDataRequests[ticker];
-  marketDataRequests[ticker] = (async () => {
-    let historyLoaded = false;
-    let quoteLoaded = false;
-    const historyTask = loadHistory
-      ? (async () => {
-          try {
-            await fetchPriceHistory(ticker);
-            historyLoaded = true;
-          } catch {
-            // Keep the local seed series, then still try the latest quote below.
-          }
-        })()
-      : Promise.resolve();
-    const quoteTask = (async () => {
+  const state = marketDataState[ticker] ||= {};
+  const tasks = [
+    (async () => {
       try {
-        // 🆕 로컬 환경 감지
-        const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-        if (isLocalhost) {
-          throw new Error("로컬 환경: API 미사용");
-        }
-
-        const response = await fetchApi(`/api/quote?symbol=${encodeURIComponent(ticker)}`, { cache: "no-store" });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = await response.json();
-        if (!Number.isFinite(payload.price)) throw new Error("Invalid quote");
-        applyLiveQuote(ticker, payload);
-        quoteLoaded = true;
-        if (renderAfter) render();
-      } catch {
-        if (!historyLoaded && !liveQuotes[ticker]) delete liveQuotes[ticker];
-      }
-    })();
-    try {
-      await quoteTask;
-      if (loadHistory) {
-        await historyTask;
-        if (renderAfter && historyLoaded && !quoteLoaded) render();
-        else if (renderAfter && historyLoaded) render();
-      }
-    } finally {
-      delete marketDataRequests[ticker];
-      if (renderAfter) render();
-    }
-  })();
+        const payload = await readMarketPayload("/api/quote?symbol=" + encodeURIComponent(ticker));
+        applyLiveQuote(ticker,payload);
+        state.quoteError = "";
+      } catch (error) { state.quoteError = error.message; }
+    })()
+  ];
+  if (options.history ?? true) tasks.push((async()=>{
+    try { await fetchPriceHistory(ticker); state.historyError = ""; }
+    catch(error) { state.historyError = error.message; }
+  })());
+  marketDataRequests[ticker] = Promise.allSettled(tasks).finally(()=>{
+    delete marketDataRequests[ticker];
+    if (options.renderAfter ?? true) render();
+  });
   return marketDataRequests[ticker];
 }
 
@@ -1554,7 +1511,7 @@ async function refreshTrackedMarketData(options = {}) {
     tickers.map((ticker) =>
       fetchSymbolMarketData(ticker, {
         renderAfter: false,
-        history: includeMissingHistory && !ohlcvHistory[ticker],
+        history: options.forceHistory || !ohlcvHistory[ticker] || Date.now() - (historyFetchedAt[ticker] || 0) > 5 * 60000,
       }),
     ),
   );
@@ -2059,12 +2016,6 @@ function drawChart(prices, projected, volatility, ticker = elements.ticker.value
 
 async function fetchMarketIndices() {
   try {
-    // 🆕 로컬 환경 감지
-    const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-    if (isLocalhost) {
-      throw new Error("로컬 환경: API 미사용");
-    }
-
     const response = await fetchApi("/api/google-indices", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
@@ -2344,37 +2295,8 @@ function calculateIndicators(prices) {
   return { sma5, sma10, rsi, macd, trend };
 }
 
-function buildOhlcv(ticker, prices = samples[ticker]) {
-  ensureSymbolData(ticker);
-  const actualRows = ohlcvHistory[ticker];
-  if (actualRows?.length === prices.length) {
-    return actualRows.map((row, index) => ({
-      date: row.date || priceDates[ticker]?.[index] || sampleDates[index] || `D+${index + 1}`,
-      open: row.open,
-      high: row.high,
-      low: row.low,
-      close: prices[index] ?? row.close,
-      volume: Number.isFinite(row.volume) ? row.volume : 0,
-    }));
-  }
-  const profile = companyProfiles[ticker];
-  return prices.map((close, index) => {
-    const previous = prices[index - 1] ?? close * 0.992;
-    const open = previous * (1 + Math.sin(index + ticker.length) * 0.004);
-    const spread = Math.max(close * (0.008 + (profile.beta - 0.8) * 0.002), close * 0.006);
-    const high = Math.max(open, close) + spread;
-    const low = Math.max(1, Math.min(open, close) - spread);
-    const volumeBase = isKoreanTicker(ticker) ? 1800000 : 24000000;
-    const volume = Math.round(volumeBase * (1 + index * 0.035 + Math.abs(close - previous) / previous * 5));
-    return {
-      date: priceDates[ticker]?.[index] || sampleDates[index] || `D+${index + 1}`,
-      open,
-      high,
-      low,
-      close,
-      volume,
-    };
-  });
+function buildOhlcv(ticker, prices = getAnalysisPrices(ticker)) {
+  return getAnalysisRows(ticker);
 }
 
 function movingAverage(values, window) {
@@ -2392,7 +2314,7 @@ function ema(values, span) {
   }, []);
 }
 
-function calculateAdvancedIndicators(ticker, prices = samples[ticker]) {
+function calculateAdvancedIndicators(ticker, prices = getAnalysisPrices(ticker)) {
   ensureSymbolData(ticker);
   const rows = buildOhlcv(ticker, prices);
   const closes = rows.map((row) => row.close);
@@ -3814,7 +3736,7 @@ function calculateBasicStrength(indicators, rsi, stochastic, adx, obv, vwap) {
 
 function getModelSummary(ticker) {
   ensureSymbolData(ticker);
-  const prices = samples[ticker];
+  const prices = getAnalysisPrices(ticker);
   const last = prices.at(-1);
   const lr = simpleLinearPrediction(prices);
   const arima = arimaLikePrediction(prices);
@@ -3863,9 +3785,9 @@ function drawCompareChart(seriesSymbols = compareSymbols) {
   const height = rect.height;
   const padding = { top: 24, right: 28, bottom: 34, left: 48 };
   const colors = ["#0f7b6c", "#2367a8", "#b56b00", "#8b4aa0", "#b03232"];
-  const series = seriesSymbols.map((ticker) => {
+  const series = seriesSymbols.filter(hasAnalysisHistory).map((ticker) => {
     ensureSymbolData(ticker);
-    const prices = samples[ticker];
+    const prices = getAnalysisPrices(ticker);
     const base = prices[0];
     return { ticker, values: prices.map((price) => ((price - base) / base) * 100) };
   });
@@ -3913,6 +3835,7 @@ function drawCompareChart(seriesSymbols = compareSymbols) {
 }
 
 function renderModelAnalysis() {
+  if (!hasAnalysisHistory(elements.ticker.value)) return renderEmptyDashboard(elements.ticker.value);
   const peerGroup = getNewsCoMentionGroup(elements.ticker.value);
   const peerSymbols = getPeerComparisonSymbols(elements.ticker.value);
   compareSymbols = peerSymbols;
@@ -3922,9 +3845,9 @@ function renderModelAnalysis() {
   renderCompareControls(peerSymbols, peerGroup?.label);
   drawCompareChart(peerSymbols);
 
-  const summaries = peerSymbols.map(getModelSummary).sort((a, b) => b.recommendationScore - a.recommendationScore);
+  const summaries = peerSymbols.filter(hasAnalysisHistory).map(getModelSummary).sort((a, b) => b.recommendationScore - a.recommendationScore);
   const selectedSummary = getModelSummary(elements.ticker.value);
-  const top = summaries[0];
+  const top = summaries[0] || selectedSummary;
   elements.topModelPick.textContent = getTickerName(top.ticker);
   elements.topModelPick.classList.add("model-company-name");
   elements.topModelCopy.textContent = `${getTickerName(top.ticker)}은 ${peerGroup?.label || "뉴스 동반 언급 그룹"} 5개 종목 중 모델 평균 ${formatPercent(top.avgReturn)}와 ${Math.round(top.agreement * 100)}% 합의도를 보입니다.`;
@@ -4164,6 +4087,7 @@ function drawTechnicalChart(indicators) {
 }
 
 function renderAiInsights(ticker) {
+  if (!hasAnalysisHistory(ticker)) return renderEmptyDashboard(ticker);
   const indicators = calculateAdvancedIndicators(ticker, getAnalysisPrices(ticker));
   const latest = indicators.at(-1);
   const previous = indicators.at(-2);
@@ -4565,6 +4489,7 @@ function drawSmartMoneyChart(canvasElement, context, setup, mode = "smc") {
 }
 
 function renderSmcAnalysis() {
+  if (!hasAnalysisHistory(elements.ticker.value)) return renderEmptyDashboard(elements.ticker.value);
   const ticker = elements.ticker.value;
   if (!ticker) return;
   const setup = getSmartMoneySetup(ticker, "smc");
@@ -4589,6 +4514,7 @@ function renderSmcAnalysis() {
 
 // 🆕 Phase 4 모델 분석 렌더링
 function renderModelsAnalysis() {
+  if (!hasAnalysisHistory(elements.ticker.value)) return renderEmptyDashboard(elements.ticker.value);
   const ticker = elements.ticker.value;
   if (!ticker) return;
 
@@ -4683,6 +4609,7 @@ function renderModelsAnalysis() {
 
 // 🆕 Option B: 백테스트 분석 렌더링
 function renderBacktestAnalysis() {
+  if (!hasAnalysisHistory(elements.ticker.value)) return renderEmptyDashboard(elements.ticker.value);
   const ticker = elements.ticker.value;
   if (!ticker) return;
 
@@ -4765,6 +4692,7 @@ function renderBacktestAnalysis() {
 
 // 🆕 Phase 3 세력 추적 분석 렌더링
 function renderSmartMoneyFlowAnalysis() {
+  if (!hasAnalysisHistory(elements.ticker.value)) return renderEmptyDashboard(elements.ticker.value);
   const ticker = elements.ticker.value;
   if (!ticker) return;
 
@@ -4835,6 +4763,7 @@ function renderSmartMoneyFlowAnalysis() {
 }
 
 function renderIctAnalysis() {
+  if (!hasAnalysisHistory(elements.ticker.value)) return renderEmptyDashboard(elements.ticker.value);
   const ticker = elements.ticker.value;
   if (!ticker) return;
   const setup = getSmartMoneySetup(ticker, "ict");
@@ -5717,6 +5646,7 @@ function drawDanteChart(setup) {
 }
 
 function renderDanteAnalysis() {
+  if (!hasAnalysisHistory(elements.ticker.value)) return renderEmptyDashboard(elements.ticker.value);
   const setup = getDanteSetup(elements.ticker.value);
   drawDanteChart(setup);
   elements.danteScore.textContent = setup.score;
@@ -5834,7 +5764,7 @@ function renderDanteAnalysis() {
     .map(([title, body]) => `<li><strong>${title}</strong><span>${body}</span></li>`)
     .join("");
 
-  const rankings = watchlistSymbols.map(getDanteSetup).sort((a, b) => b.score - a.score);
+  const rankings = watchlistSymbols.filter(hasAnalysisHistory).map(getDanteSetup).sort((a, b) => b.score - a.score);
   elements.danteRankingBody.innerHTML = rankings
     .map(
       (item) => `
@@ -5873,14 +5803,16 @@ function renderWatchlist() {
   watchlistSymbols.forEach(ensureSymbolData);
   const rows = watchlistSymbols
     .map((ticker) => {
-      const prices = samples[ticker];
-      const result = forecast(prices);
-      return { ticker, prices, result, signal: getSignal(result.score) };
+      const prices = getAnalysisPrices(ticker);
+      const result = prices.length ? forecast(prices) : null;
+      return { ticker, prices, result, signal: result ? getSignal(result.score) : null };
     });
 
   elements.watchlistBody.innerHTML = rows
     .map(
-      ({ ticker, prices, result, signal }) => `
+      ({ ticker, prices, result, signal }) => !result ? `
+        <tr><td><input type="checkbox" data-watchlist-select="${ticker}" aria-label="${getTickerName(ticker)} 선택" /></td><td>${getTickerName(ticker)}</td><td>${getCurrentPrice(ticker) ? formatPrice(getCurrentPrice(ticker), ticker) : "-"}</td><td colspan="5">실제 일봉 미수신 · 분석 보류</td><td><button class="table-action danger" type="button" data-remove-watchlist="${ticker}">삭제</button></td></tr>
+      ` : `
         <tr data-ticker-row="${ticker}">
           <td class="select-column">
             <input type="checkbox" data-watchlist-select="${ticker}" aria-label="${getTickerName(ticker)} 선택" />
@@ -5911,8 +5843,8 @@ function renderWatchlist() {
 function sortWatchlistByScore() {
   watchlistSymbols.forEach(ensureSymbolData);
   watchlistSymbols = [...watchlistSymbols].sort((left, right) => {
-    const leftScore = forecast(samples[left]).score;
-    const rightScore = forecast(samples[right]).score;
+    const leftScore = hasAnalysisHistory(left) ? forecast(getAnalysisPrices(left)).score : -1;
+    const rightScore = hasAnalysisHistory(right) ? forecast(getAnalysisPrices(right)).score : -1;
     return rightScore - leftScore;
   });
   watchlistSortedByScore = true;
@@ -6522,54 +6454,69 @@ function clearCanvas(canvasElement, context, message) {
   context.textAlign = "left";
 }
 
-function renderEmptyDashboard() {
+function renderEmptyDashboard(ticker = "") {
+  const pendingMetrics = [
+    "modelTrendScore", "modelTrendVerdict", "modelReversionScore", "modelReversionVerdict",
+    "modelVolumeScore", "modelVolumeVerdict", "modelSmartMoneyScore", "modelSmartMoneyVerdict",
+    "modelValuationScore", "modelValuationVerdict", "modelFinalSignal", "modelFinalScore", "modelFinalAnalysis",
+    "backtestWinRate", "backtestWinRateCopy", "backtestCumulativeReturn", "backtestMDD", "backtestSharpeRatio",
+    "backtestVerdict", "backtestConclusionCopy", "backtestTotalSignals", "backtestSuccessCount",
+    "instFlowSignal", "instFlowScore", "foreignFlowSignal", "foreignFlowScore", "shortSellSignal",
+    "shortSellScore", "smartMoneyVerdict", "institutionAvgCost", "priceGapPercent",
+    "vol30", "vol60", "volAll", "volTrend", "volTrendCopy", "daysTo50", "daysTo100",
+    "recoveryProb3M", "recoveryProb6M", "worstDaily", "worstContinuous", "worstCasePrice", "additionalDownside",
+    "forcedSellLevel", "forcedSellCopy"
+  ];
+  pendingMetrics.forEach(key => { if (elements[key]) elements[key].textContent = "-"; });
+  if (elements.forcedSellFactors) elements.forcedSellFactors.innerHTML = "";
+  const message = text => ticker ? "실제 일봉 미수신 · 분석 보류" : text;
   updateMarketStrip();
   updateDataStatusBar("");
   renderWatchlist();
-  clearCanvas(canvas, ctx, "관심종목/등록에서 종목을 추가하면 예측 그래프가 표시됩니다.");
-  clearCanvas(radarCanvas, radarCtx, "종목 등록 후 재무 레이더가 표시됩니다.");
-  clearCanvas(compareCanvas, compareCtx, "종목 등록 후 비교 차트가 표시됩니다.");
-  clearCanvas(technicalCanvas, technicalCtx, "종목 등록 후 기술 분석 차트가 표시됩니다.");
-  clearCanvas(danteCanvas, danteCtx, "종목 등록 후 단테 기법 차트가 표시됩니다.");
-  clearCanvas(smcCanvas, smcCtx, "종목 등록 후 SMC 차트 분석이 표시됩니다.");
-  clearCanvas(ictCanvas, ictCtx, "종목 등록 후 ICT 차트 분석이 표시됩니다.");
+  clearCanvas(canvas, ctx, message("관심종목/등록에서 종목을 추가하면 예측 그래프가 표시됩니다."));
+  clearCanvas(radarCanvas, radarCtx, message("종목 등록 후 재무 레이더가 표시됩니다."));
+  clearCanvas(compareCanvas, compareCtx, message("종목 등록 후 비교 차트가 표시됩니다."));
+  clearCanvas(technicalCanvas, technicalCtx, message("종목 등록 후 기술 분석 차트가 표시됩니다."));
+  clearCanvas(danteCanvas, danteCtx, message("종목 등록 후 단테 기법 차트가 표시됩니다."));
+  clearCanvas(smcCanvas, smcCtx, message("종목 등록 후 SMC 차트 분석이 표시됩니다."));
+  clearCanvas(ictCanvas, ictCtx, message("종목 등록 후 ICT 차트 분석이 표시됩니다."));
 
-  elements.chartTitle.textContent = "종목 등록 대기";
+  elements.chartTitle.textContent = message("종목 등록 대기");
   elements.signalPill.textContent = "대기";
   elements.signalPill.style.background = "var(--muted)";
   elements.score.textContent = "0";
-  elements.scoreCopy.textContent = "관심종목/등록 메뉴에서 종목을 추가하면 분석을 시작합니다.";
+  elements.scoreCopy.textContent = message("관심종목/등록 메뉴에서 종목을 추가하면 분석을 시작합니다.");
   elements.dashboardOpinionLabel.textContent = "대기";
   elements.dashboardOpinionLabel.className = "";
   elements.dashboardOpinionLevel.dataset.level = "0";
   [elements.dashboardTargetPrice, elements.dashboardStopPrice, elements.dashboardWatchPrice].forEach((item) => {
     item.textContent = "-";
   });
-  elements.dashboardOpinionCopy.textContent = "종목 등록 후 5단계 투자의견을 계산합니다.";
+  elements.dashboardOpinionCopy.textContent = message("종목 등록 후 5단계 투자의견을 계산합니다.");
   elements.returnMetric.textContent = "-";
   elements.riskMetric.textContent = "-";
   elements.confidenceMetric.textContent = "-";
   elements.livePrice.textContent = "-";
-  elements.livePriceChange.textContent = "종목 미등록";
+  elements.livePriceChange.textContent = message("종목 미등록");
   elements.livePriceChange.className = "";
   elements.livePriceSource.textContent = "-";
-  elements.livePriceUpdated.textContent = "종목 등록 후 갱신";
+  elements.livePriceUpdated.textContent = message("종목 등록 후 갱신");
   elements.volatility.textContent = "-";
   elements.regime.textContent = "-";
-  elements.recommendations.innerHTML = `<li>관심종목/등록에서 분석할 종목을 먼저 추가하세요.</li>`;
-  elements.weatherGrid.innerHTML = `<div class="empty-state">종목 등록 후 투자 지표 날씨가 표시됩니다.</div>`;
-  elements.issueList.innerHTML = `<li><strong>종목 등록 대기</strong><span>분석할 종목을 등록하면 수급, 재무, 예측 연결 이슈가 표시됩니다.</span></li>`;
-  elements.newsList.innerHTML = `<li><span>종목 등록 후 관련 뉴스 헤드라인이 표시됩니다.</span></li>`;
+  elements.recommendations.innerHTML = `<li>${message("관심종목/등록에서 분석할 종목을 먼저 추가하세요.")}</li>`;
+  elements.weatherGrid.innerHTML = `<div class="empty-state">${message("종목 등록 후 투자 지표 날씨가 표시됩니다.")}</div>`;
+  elements.issueList.innerHTML = `<li><strong>${message("종목 등록 대기")}</strong><span>${message("분석할 종목을 등록하면 수급, 재무, 예측 연결 이슈가 표시됩니다.")}</span></li>`;
+  elements.newsList.innerHTML = `<li><span>${message("종목 등록 후 관련 뉴스 헤드라인이 표시됩니다.")}</span></li>`;
 
   elements.compareTickerControls.innerHTML = "";
   elements.compareLegend.innerHTML = "";
   elements.topModelPick.textContent = "-";
-  elements.topModelCopy.textContent = "종목을 등록하면 모델 조합과 기술 지표를 기준으로 추천을 계산합니다.";
+  elements.topModelCopy.textContent = message("종목을 등록하면 모델 조합과 기술 지표를 기준으로 추천을 계산합니다.");
   elements.modelAgreement.textContent = "-";
   elements.trendStrength.textContent = "-";
   elements.rsiState.textContent = "-";
-  elements.modelCards.innerHTML = `<div class="empty-state">종목 등록 후 모델별 예측이 표시됩니다.</div>`;
-  elements.modelRankingBody.innerHTML = `<tr><td colspan="6">등록된 관심종목이 없습니다.</td></tr>`;
+  elements.modelCards.innerHTML = `<div class="empty-state">${message("종목 등록 후 모델별 예측이 표시됩니다.")}</div>`;
+  elements.modelRankingBody.innerHTML = `<tr><td colspan="6">${message("등록된 관심종목이 없습니다.")}</td></tr>`;
 
   elements.aiSignalPill.textContent = "대기";
   elements.aiSignalPill.style.background = "var(--muted)";
@@ -6581,76 +6528,85 @@ function renderEmptyDashboard() {
     item.className = "";
   });
   elements.aiPredictionPrice.textContent = "-";
-  elements.aiPredictionCopy.textContent = "종목 등록 후 기술지표 기반 예측을 계산합니다.";
+  elements.aiPredictionCopy.textContent = message("종목 등록 후 기술지표 기반 예측을 계산합니다.");
   elements.aiOpinionLabel.textContent = "대기";
   elements.aiOpinionLabel.className = "";
   elements.aiOpinionLevel.dataset.level = "0";
   [elements.aiTargetPrice, elements.aiStopPrice, elements.aiWatchPrice].forEach((item) => {
     item.textContent = "-";
   });
-  elements.aiOpinionCopy.textContent = "종목 등록 후 다음 거래일 투자의견을 계산합니다.";
+  elements.aiOpinionCopy.textContent = message("종목 등록 후 다음 거래일 투자의견을 계산합니다.");
   elements.aiConfidence.textContent = "-";
   elements.aiVolatility.textContent = "-";
   elements.aiSharpe.textContent = "-";
   [elements.aiProbUp, elements.aiInterval, elements.aiRegime, elements.aiHitRate].forEach((item) => {
     if (item) item.textContent = "-";
   });
-  if (elements.aiEnsembleList) elements.aiEnsembleList.innerHTML = `<div class="empty-state">종목 등록 후 앙상블 구성이 표시됩니다.</div>`;
-  elements.aiInsights.innerHTML = `<li class="neutral">분석할 종목을 등록하면 AI 인사이트가 표시됩니다.</li>`;
-  elements.featureImportance.innerHTML = `<div class="empty-state">종목 등록 후 특징 중요도가 표시됩니다.</div>`;
-  elements.companyInfo.innerHTML = `<div class="empty-state">종목 등록 후 회사 정보가 표시됩니다.</div>`;
-  elements.technicalDataBody.innerHTML = `<tr><td colspan="7">등록된 종목이 없습니다.</td></tr>`;
+  if (elements.aiEnsembleList) elements.aiEnsembleList.innerHTML = `<div class="empty-state">${message("종목 등록 후 앙상블 구성이 표시됩니다.")}</div>`;
+  elements.aiInsights.innerHTML = `<li class="neutral">${message("분석할 종목을 등록하면 AI 인사이트가 표시됩니다.")}</li>`;
+  elements.featureImportance.innerHTML = `<div class="empty-state">${message("종목 등록 후 특징 중요도가 표시됩니다.")}</div>`;
+  elements.companyInfo.innerHTML = `<div class="empty-state">${message("종목 등록 후 회사 정보가 표시됩니다.")}</div>`;
+  elements.technicalDataBody.innerHTML = `<tr><td colspan="7">${message("등록된 종목이 없습니다.")}</td></tr>`;
 
   [elements.dailyVol, elements.drawdown, elements.valueAtRisk, elements.riskGrade, elements.var99, elements.cvar95, elements.recovery, elements.riskSharpe, elements.sortino, elements.downsideVol, elements.stopPrice, elements.tradeRisk, elements.positionWeight, elements.kellyWeight, elements.safetyMargin].forEach((item) => {
     item.textContent = "-";
   });
-  elements.valuationRiskCopy.textContent = "종목 등록 후 안전마진을 계산합니다.";
+  elements.valuationRiskCopy.textContent = message("종목 등록 후 안전마진을 계산합니다.");
   elements.riskOpinionScore.textContent = "0";
   elements.riskOpinionLabel.textContent = "분석 대기";
   elements.riskOpinionLabel.className = "";
-  elements.riskOpinionCopy.textContent = "종목 등록 후 리스크 지표를 종합해 투자의견을 계산합니다.";
-  elements.riskOpinionReasons.innerHTML = `<li>등록된 관심종목이 없습니다.</li>`;
-  elements.stressList.innerHTML = `<div class="empty-state">종목 등록 후 스트레스 테스트가 표시됩니다.</div>`;
+  elements.riskOpinionCopy.textContent = message("종목 등록 후 리스크 지표를 종합해 투자의견을 계산합니다.");
+  elements.riskOpinionReasons.innerHTML = `<li>${message("등록된 관심종목이 없습니다.")}</li>`;
+  elements.stressList.innerHTML = `<div class="empty-state">${message("종목 등록 후 스트레스 테스트가 표시됩니다.")}</div>`;
 
   elements.danteSignalPill.textContent = "대기";
   elements.danteSignalPill.style.background = "var(--muted)";
   elements.danteScore.textContent = "0";
-  elements.dantePatternName.textContent = "종목 등록 대기";
-  elements.dantePatternCopy.textContent = "종목을 등록하면 단테식 조건을 점수화합니다.";
+  elements.dantePatternName.textContent = message("종목 등록 대기");
+  elements.dantePatternCopy.textContent = message("종목을 등록하면 단테식 조건을 점수화합니다.");
   elements.danteWatchPrice.textContent = "-";
-  elements.danteRiskLine.textContent = "종목 등록 후 손절 기준을 계산합니다.";
+  elements.danteRiskLine.textContent = message("종목 등록 후 손절 기준을 계산합니다.");
   elements.danteVolumePower.textContent = "-";
   elements.danteLongLineState.textContent = "-";
   elements.dantePullbackState.textContent = "-";
   elements.danteBuyLine.textContent = "-";
-  elements.danteChecklist.innerHTML = `<div class="empty-state">종목 등록 후 체크리스트가 표시됩니다.</div>`;
-  elements.danteRankingBody.innerHTML = `<tr><td colspan="6">등록된 관심종목이 없습니다.</td></tr>`;
-  elements.danteVideoRules.innerHTML = `<div class="empty-state">종목 등록 후 보완 규칙이 표시됩니다.</div>`;
-  elements.dantePlaybook.innerHTML = `<li><strong>종목 등록</strong><span>관심종목/등록에서 분석할 종목을 추가하세요.</span></li>`;
+  elements.danteChecklist.innerHTML = `<div class="empty-state">${message("종목 등록 후 체크리스트가 표시됩니다.")}</div>`;
+  elements.danteRankingBody.innerHTML = `<tr><td colspan="6">${message("등록된 관심종목이 없습니다.")}</td></tr>`;
+  elements.danteVideoRules.innerHTML = `<div class="empty-state">${message("종목 등록 후 보완 규칙이 표시됩니다.")}</div>`;
+  elements.dantePlaybook.innerHTML = `<li><strong>${message("종목 등록")}</strong><span>${message("관심종목/등록에서 분석할 종목을 추가하세요.")}</span></li>`;
   elements.smcSignalPill.textContent = "대기";
   elements.smcSignalPill.style.background = "var(--muted)";
   elements.smcScore.textContent = "0";
-  elements.smcSetupName.textContent = "종목 등록 대기";
-  elements.smcSetupCopy.textContent = "종목을 등록하면 SMC 조건을 점수화합니다.";
+  elements.smcSetupName.textContent = message("종목 등록 대기");
+  elements.smcSetupCopy.textContent = message("종목을 등록하면 SMC 조건을 점수화합니다.");
   [elements.smcStructure, elements.smcSweep, elements.smcFvg, elements.smcOrderBlock].forEach((item) => {
     item.textContent = "-";
   });
-  elements.smcChecklist.innerHTML = `<div class="empty-state">종목 등록 후 SMC 체크리스트가 표시됩니다.</div>`;
-  elements.smcInterpretation.innerHTML = `<li><strong>종목 등록</strong><span>관심종목/등록에서 분석할 종목을 추가하세요.</span></li>`;
+  elements.smcChecklist.innerHTML = `<div class="empty-state">${message("종목 등록 후 SMC 체크리스트가 표시됩니다.")}</div>`;
+  elements.smcInterpretation.innerHTML = `<li><strong>${message("종목 등록")}</strong><span>${message("관심종목/등록에서 분석할 종목을 추가하세요.")}</span></li>`;
   elements.ictSignalPill.textContent = "대기";
   elements.ictSignalPill.style.background = "var(--muted)";
   elements.ictScore.textContent = "0";
-  elements.ictSetupName.textContent = "종목 등록 대기";
-  elements.ictSetupCopy.textContent = "종목을 등록하면 ICT 조건을 점수화합니다.";
+  elements.ictSetupName.textContent = message("종목 등록 대기");
+  elements.ictSetupCopy.textContent = message("종목을 등록하면 ICT 조건을 점수화합니다.");
   [elements.ictDelivery, elements.ictOte, elements.ictLiquidity, elements.ictEntry].forEach((item) => {
     item.textContent = "-";
   });
-  elements.ictChecklist.innerHTML = `<div class="empty-state">종목 등록 후 ICT 체크리스트가 표시됩니다.</div>`;
-  elements.ictInterpretation.innerHTML = `<li><strong>종목 등록</strong><span>관심종목/등록에서 분석할 종목을 추가하세요.</span></li>`;
+  elements.ictChecklist.innerHTML = `<div class="empty-state">${message("종목 등록 후 ICT 체크리스트가 표시됩니다.")}</div>`;
+  elements.ictInterpretation.innerHTML = `<li><strong>${message("종목 등록")}</strong><span>${message("관심종목/등록에서 분석할 종목을 추가하세요.")}</span></li>`;
+  if (ticker) {
+    updateLivePricePanel(ticker);
+    updateDataStatusBar(ticker);
+    elements.chartTitle.textContent = getTickerName(ticker) + " · 분석 보류";
+    [elements.score, elements.riskOpinionScore, elements.danteScore, elements.smcScore, elements.ictScore].forEach(item => item.textContent = "-");
+    if (elements.techniquesGrid) elements.techniquesGrid.innerHTML = "";
+  }
   renderAdminUsers();
 }
 
+let marketRenderRevision = 0;
 function render() {
+  const revision = ++marketRenderRevision;
   console.log(`🎨 render() 시작, 현재 ticker: ${elements.ticker.value}`);
 
   // renderTickerOptions는 watchlistSymbols 변경될 때만 호출하면 됨
@@ -6663,9 +6619,9 @@ function render() {
 
   const selectedTicker = elements.ticker.value;
   console.log(`📌 render() - selectedTicker: ${selectedTicker}`);
-  if (!selectedTicker) {
+  if (!selectedTicker || !hasAnalysisHistory(selectedTicker)) {
     console.log(`⚠️ selectedTicker가 비어있어서 renderEmptyDashboard() 실행`);
-    renderEmptyDashboard();
+    renderEmptyDashboard(selectedTicker);
     return;
   }
   const prices = getAnalysisPrices(selectedTicker);
@@ -6686,6 +6642,7 @@ function render() {
   elements.riskMetric.textContent = formatPercent(-result.risk);
   elements.confidenceMetric.textContent = `${Math.round(result.confidence)}%`;
   updateLivePricePanel(selectedTicker);
+  updateDataStatusBar(selectedTicker);
   elements.volatility.textContent = result.volatility > 0.025 ? "높음" : result.volatility > 0.012 ? "중립" : "낮음";
   elements.regime.textContent = result.expectedReturn > 0.03 ? "상승 확장" : result.expectedReturn < -0.01 ? "약세 전환" : "상승 둔화";
 
@@ -6718,6 +6675,7 @@ function render() {
 
   // 🚀 초기 로드 최적화: 무거운 작업들을 requestIdleCallback으로 지연
   const performHeavyRender = () => {
+    if (revision !== marketRenderRevision || elements.ticker.value !== selectedTicker) return;
     drawChart(prices, result.projected, result.volatility, selectedTicker);
     renderForcedSellRisk(selectedTicker);
     renderFundamental(selectedTicker);
@@ -7224,6 +7182,7 @@ elements.loginForm.addEventListener("submit", async (event) => {
 });
 
 elements.logoutBtn?.addEventListener("click", async () => {
+  if (isLocalPreview) return;
   if (!window.BokAuth) return;
   suppressAuthHandler = false;
   try {
@@ -7245,7 +7204,7 @@ elements.ticker.addEventListener("change", () => {
 document.querySelector("#refreshBtn").addEventListener("click", () => {
   render();
   fetchMarketIndices();
-  refreshTrackedMarketData({ includeMissingHistory: true });
+  refreshTrackedMarketData({ forceHistory: true });
 });
 
 // 이동평균선 토글
@@ -7270,7 +7229,17 @@ elements.themeToggle.setAttribute("aria-checked", document.body.dataset.theme ==
 setAuthMode("login");
 
 // Firebase 인증 상태 감지: 새로고침/재방문 시 자동 로그인 + 승인 상태 재확인
-if (window.BokAuth) {
+if (isLocalPreview) {
+  let portfolio = null;
+  try { portfolio = JSON.parse(safeStorageGet(localStore, "bok-local-preview-portfolio")); } catch {}
+  currentProfile = {
+    watchlist: Array.isArray(portfolio?.watchlist) ? portfolio.watchlist.filter(t => typeof t === "string" && /^[A-Z0-9.-]{1,30}$/.test(t)) : ["NVDA", "005930.KS"],
+    compareSymbols: []
+  };
+  currentUserUid = null;
+  if (elements.logoutBtn) elements.logoutBtn.hidden = true;
+  unlockDashboard("local-preview");
+} else if (window.BokAuth) {
   BokAuth.onAuthStateChanged(async (user) => {
     if (suppressAuthHandler) return; // 명시적 로그인/가입 처리 중에는 건너뛴다
     if (!user) {
@@ -7499,8 +7468,8 @@ async function runSignalScan(market) {
     const historyMap = {};
     await runWithConcurrency(universe, 6, async (symbol) => {
       try { await fetchPriceHistory(symbol.ticker); } catch (e) { /* 일부 실패 허용 */ }
-      const hist = ohlcvHistory?.[symbol.ticker] || samples?.[symbol.ticker] || [];
-      if (Array.isArray(hist) && hist.length > 0) historyMap[symbol.ticker] = hist;
+      const hist = ohlcvHistory?.[symbol.ticker] || [];
+      if (Array.isArray(hist) && hist.length >= 5) historyMap[symbol.ticker] = hist;
     }, (done, total) => setSignalProgress(done, total, "일봉 데이터 분석 중…"));
 
     const scanTargets = universe.filter((s) => historyMap[s.ticker]);

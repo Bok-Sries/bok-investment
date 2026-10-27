@@ -6,6 +6,8 @@ import history from "./api/history.js";
 import quote from "./api/quote.js";
 import symbolSearch from "./api/symbol-search.js";
 import news from "./api/news.js";
+import fundamental from "./api/fundamental.js";
+import universe from "./api/universe.js";
 
 const root = process.cwd();
 const port = Number(process.env.PORT || 4173);
@@ -29,6 +31,7 @@ const corsHeaders = {
 };
 
 const allowedStaticFiles = new Set(["/index.html", "/app.js", "/styles.css", "/smartmoney-data.json"]);
+for (const file of ["signal-scanner.js", "foreign-institution-data.js", "advanced-signal-detector.js", "ai-prediction-engine.js", "firebase-init.js", "favicon.ico", "icon.png"]) allowedStaticFiles.add("/" + file);
 const allowedStaticPrefixes = ["/assets/"];
 
 function isAllowedStaticPath(pathname) {
@@ -67,6 +70,8 @@ const apiHandlers = {
   "/api/history": history,
   "/api/symbol-search": symbolSearch,
   "/api/news": news,
+  "/api/fundamental": fundamental,
+  "/api/universe": universe,
 };
 
 const server = createServer(async (req, res) => {

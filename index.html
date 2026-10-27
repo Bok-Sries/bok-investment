@@ -12,6 +12,11 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body data-theme="dark">
+    <script>
+      if (["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {
+        document.body.classList.add("is-authenticated");
+      }
+    </script>
     <!-- 🆕 Toast 메시지 컨테이너 -->
     <div id="toastContainer" style="position: fixed; top: 20px; right: 20px; z-index: 10000; display: flex; flex-direction: column; gap: 12px; pointer-events: none;"></div>
 

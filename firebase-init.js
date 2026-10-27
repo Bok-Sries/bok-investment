@@ -10,6 +10,8 @@
  *   `${id}@bok-investment.web.app` 형태의 이메일로 변환해 Firebase Auth 사용.
  */
 (function () {
+  // Local previews never initialize the production authentication client.
+  if (["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) return;
   const firebaseConfig = {
     apiKey: "AIzaSyCslRTCf4x8VHF-8DaEdFh2Aozmol0WUew",
     authDomain: "bok-investment.firebaseapp.com",
